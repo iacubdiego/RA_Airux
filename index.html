@@ -136,14 +136,6 @@
     ejeX: 0, ejeY: 0,      // desfase del eje de la colmena respecto del centro de la tapa (u)
     patasEnX: true,        // las placas-pata del soporte quedan en los extremos ±X
 
-    // Anclaje: la colmena siempre está sobre una mesa → la tapa tiene que quedar horizontal
-    alinearMesa: true,     // usa la gravedad del celular para descartar lecturas malas y nivelar la tapa
-    toleranciaMesa: 20,    // grados: una lectura más inclinada que esto se descarta
-    estableSeg: 0.35,      // la tapa tiene que verse quieta este tiempo antes de anclar la escena
-    anguloMin: 30, anguloMax: 65,  // inclinación ideal de la mirada (90° = desde arriba, 45° = diagonal)
-    esperarAngulo: true,   // la animación arranca recién cuando se mira con esa inclinación
-    guiaAngulo: true,      // muestra indicaciones para corregir la inclinación
-
     // Enjambre
     abejas: 40,
     abejasIniciales: 5,    // cuántas salen juntas apenas se detecta la tapa
@@ -166,7 +158,7 @@
     florAlturaMin: 0.45, florAlturaMax: 0.85, // largo del tallo (u)
     florTamano: 1.3,
     florSemilla: 7,        // cambia la disposición y la mezcla de tipos
-    pasto: 120,            // briznas de pasto alrededor de cada planta
+    pasto: 40,             // briznas de pasto alrededor de cada planta
     viento: 0.05,          // vaivén de flores y pasto (u en la punta de algo de 1 u de alto)
 
     // Zona de salida (en coordenadas de la tapa; 0,0 = centro del logo)
@@ -184,7 +176,6 @@
     logoInclinacion: 30,   // cuánto se recuesta hacia atrás (0 = vertical, 90 = acostado)
     logoGiro: 0,           // gira cartel y posición alrededor del eje de la colmena (grados)
     logoAncho: 2.0,        // ancho (u)
-    logoSeparacionMin: 0.6, // distancia mínima entre el logo y la colmena (u); si hace falta, el logo se aleja
     logoSuavizado: 0.25,   // filtro anti-temblor en segundos (0 = sin filtro; más = más quieto pero con retraso)
 
     // Abeja grande: la abeja del logo sale de la tapa, da una vuelta y se posa en su lugar del logo
@@ -220,44 +211,6 @@
   /* ═════════════════════════════════════════════════════════════════════
      SONIDO: zumbido sintetizado con Web Audio (sin archivos ni licencias)
      ═════════════════════════════════════════════════════════════════════ */
-  /* ═════════════════════════════════════════════════════════════════════
-     GRAVEDAD: "arriba" según los sensores del celular, en coordenadas de la cámara.
-     En A-Frame/MindAR la cámara queda fija en el origen mirando a −Z, con +Y arriba de la
-     pantalla: en vertical coincide con los ejes del dispositivo (W3C), así que alcanza con
-     beta/gamma (no hace falta la brújula).
-     ═════════════════════════════════════════════════════════════════════ */
-  const Gravedad = {
-    arriba: new THREE.Vector3(0, 0, 1), disponible: false, ultima: 0,
-    // Llamar dentro del toque: iOS pide permiso
-    pedirPermiso() {
-      const escuchar = () => window.addEventListener('deviceorientation', (e) => this.leer(e));
-      const DOE = window.DeviceOrientationEvent;
-      if (DOE && typeof DOE.requestPermission === 'function') {
-        DOE.requestPermission().then((r) => { if (r === 'granted') escuchar(); }).catch(() => {});
-      } else if (DOE) {
-        escuchar();
-      }
-    },
-    leer(e) {
-      if (e.beta == null || e.gamma == null) return;
-      const b = THREE.MathUtils.degToRad(e.beta), g = THREE.MathUtils.degToRad(e.gamma);
-      // Arriba del mundo en ejes del dispositivo = 3.ª fila de Rz(α)·Rx(β)·Ry(γ)
-      this.arriba.set(-Math.cos(b) * Math.sin(g), Math.sin(b), Math.cos(b) * Math.cos(g));
-      this.disponible = true;
-      this.ultima = performance.now();
-    },
-    fresca() { return this.disponible && performance.now() - this.ultima < 500; },
-    anguloPantalla() {
-      return (screen.orientation && typeof screen.orientation.angle === 'number')
-        ? screen.orientation.angle : (window.orientation || 0);
-    },
-    // Si la pantalla está girada, los ejes de la cámara giran respecto de los del dispositivo
-    enCamara(out) {
-      const a = THREE.MathUtils.degToRad(this.anguloPantalla()), c = Math.cos(a), s = Math.sin(a), u = this.arriba;
-      return out.set(c * u.x - s * u.y, s * u.x + c * u.y, u.z);
-    },
-  };
-
   /* Convierte una muestra en un bucle sin corte: recorta el silencio final y funde el final
      con el principio (fundido de igual potencia), así no hay "clic" al reiniciar el loop. */
   function bucleSinCorte(ctx, buf, segCruce) {
@@ -606,23 +559,8 @@
 
   AFRAME.registerComponent('colmena', {
     init() {
-      // "anclaje": la pose de la tapa ya validada y nivelada (ver actualizarPose). Lleva la colmena
-      // invisible y las ayudas; abejas, flores y logo parten de esta misma pose (con filtro).
-      this.anclaje = new THREE.Group();
-      this.anclaje.matrixAutoUpdate = false;
-      this.anclaje.visible = false;
-      this.el.sceneEl.object3D.add(this.anclaje);
-      this.raiz = this.anclaje;               // espacio de la tapa (ver diagrama arriba)
-      this.ancla = {
-        pose: new THREE.Matrix4(), anclado: false, quietoSeg: 0, invalidaSeg: 0, malaMesaSeg: 0,
-        sinMesa: false, angPantalla: null, desvio: null, elev: null,
-        p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(),
-        pPrev: new THREE.Vector3(), qPrev: new THREE.Quaternion(), n: new THREE.Vector3(),
-        arriba: new THREE.Vector3(), qa: new THREE.Quaternion(), inv: new THREE.Matrix4(), cam: new THREE.Vector3(),
-      };
-      this.iniciado = false;
-      this.pista = document.getElementById('pista');
-      this.textoPista = null;
+      this.raiz = new THREE.Group();          // espacio de la tapa (ver diagrama arriba)
+      this.el.object3D.add(this.raiz);
 
       // Datos aleatorios fijos por abeja (normalizados 0..1, se escalan con CONFIG en cada frame,
       // así los sliders cambian el enjambre en vivo sin re-sortear nada)
@@ -957,8 +895,7 @@
       // 1) Pose deseada en coordenadas de la tapa
       const M = this.logoMeta, deg = THREE.MathUtils.degToRad;
       const g = deg(C.logoGiro);
-      const dist = this.distanciaLogo();               // respeta la separación mínima con la colmena
-      M.p.set(C.ejeX - Math.sin(g) * dist, C.ejeY + Math.cos(g) * dist, C.logoAltura);
+      M.p.set(C.ejeX - Math.sin(g) * C.logoDistancia, C.ejeY + Math.cos(g) * C.logoDistancia, C.logoAltura);
       // El logo mira a +Z; lo levantamos girando en X (90° = vertical mirando a −Y) menos la inclinación
       M.qInc.setFromAxisAngle(M.ejeX, Math.PI / 2 - deg(C.logoInclinacion));
       M.qGiro.setFromAxisAngle(M.ejeZ, g);
@@ -969,7 +906,8 @@
       M.localTapa.copy(M.local); M.qTapa.copy(M.q); M.sTapa = k;          // para la abeja grande
 
       // 2) Pasarla a coordenadas de la escena con la pose actual de la tapa
-      M.local.premultiply(this.ancla.pose);
+      this.raiz.updateWorldMatrix(true, false);
+      M.local.premultiply(this.raiz.matrixWorld);
       M.local.decompose(M.p, M.q, M.s);
 
       // 3) Filtro exponencial: se acerca a la pose nueva sin seguir el temblor cuadro a cuadro
@@ -988,123 +926,7 @@
       if (usar3D) this.actualizarAbejaGrande(visible);
     },
 
-    reiniciarAnimacion() { this.simT = 0; this.iniciado = false; },
-
-    /* ── SEPARACIÓN LOGO–COLMENA ───────────────────────────────────────────
-       Distancia mínima entre el rectángulo del logo y la caja que envuelve la colmena
-       (tapa + soporte, de la mesa a la cara superior). Muestrea el rectángulo en una grilla. */
-    huecoLogo(dist) {
-      const C = CONFIG, deg = THREE.MathUtils.degToRad;
-      const g = deg(C.logoGiro), inc = deg(C.logoInclinacion);
-      const W = C.logoAncho, H = W * 0.378;                        // proporción del logo
-      const dx = -Math.sin(g), dy = Math.cos(g);                   // hacia dónde se corre el logo
-      const cx = C.ejeX + dx * dist, cy = C.ejeY + dy * dist, cz = C.logoAltura;
-      const rx = Math.cos(g), ry = Math.sin(g);                    // a lo ancho del logo
-      const ux = dx * Math.sin(inc), uy = dy * Math.sin(inc), uz = Math.cos(inc);   // a lo alto
-      const hx = Math.max(0.5, PIEZAS_MM.soporte.ancho / 2 / C.markerMm);
-      const hy = Math.max(PIEZAS_MM.tapa.largo / 2, PIEZAS_MM.soporte.largo / 2) / C.markerMm;
-      const zMesa = -C.altoColmenaMm / C.markerMm;
-      let min = Infinity;
-      for (let i = -4; i <= 4; i++) for (let j = -2; j <= 2; j++) {
-        const a = (W / 2) * (i / 4), b = (H / 2) * (j / 2);
-        const x = cx + rx * a + ux * b, y = cy + ry * a + uy * b, z = cz + uz * b;
-        const ex = Math.max(C.ejeX - hx - x, 0, x - C.ejeX - hx);
-        const ey = Math.max(C.ejeY - hy - y, 0, y - C.ejeY - hy);
-        const ez = Math.max(zMesa - z, 0, z);
-        min = Math.min(min, Math.hypot(ex, ey, ez));
-      }
-      return min;
-    },
-
-    // Corre el logo hacia afuera lo necesario para respetar la separación (cálculo cacheado)
-    distanciaLogo() {
-      const C = CONFIG;
-      const clave = [C.logoDistancia, C.logoAltura, C.logoAncho, C.logoInclinacion, C.logoGiro,
-        C.logoSeparacionMin, C.ejeX, C.ejeY, C.altoColmenaMm].join('|');
-      if (clave === this._claveLogo) return this._distLogo;
-      let d = C.logoDistancia;
-      for (let k = 0; k < 60; k++) {
-        const falta = C.logoSeparacionMin - this.huecoLogo(d);
-        if (falta <= 1e-3) break;
-        d += Math.max(0.01, falta);
-      }
-      this._claveLogo = clave; this._distLogo = d; this.huecoLogoActual = this.huecoLogo(d);
-      return d;
-    },
-
-    /* ── ANCLAJE ────────────────────────────────────────────────────────────
-       Toma la pose cruda de MindAR y:
-        1. la descarta si la tapa aparece inclinada respecto de la gravedad (lectura mala);
-        2. si está bien, la nivela: gira la tapa lo mínimo para que su normal sea "arriba";
-        3. ancla la escena recién cuando la tapa se vio quieta un rato (evita arrancar en una
-           pose equivocada);
-        4. calcula la inclinación de la mirada (elevación de la cámara sobre la tapa). */
-    actualizarPose(dt) {
-      const C = CONFIG, A = this.ancla, o = this.el.object3D;
-      if (!o.visible) {
-        A.anclado = false; A.quietoSeg = 0; A.invalidaSeg = 0; A.elev = null; A.desvio = null;
-        return false;
-      }
-      o.updateWorldMatrix(true, false);
-      o.matrixWorld.decompose(A.p, A.q, A.s);
-      A.n.set(0, 0, 1).applyQuaternion(A.q);
-
-      // Si cambió la orientación de la pantalla, volver a confiar en los sensores
-      const angP = Gravedad.anguloPantalla();
-      if (angP !== A.angPantalla) { A.angPantalla = angP; A.sinMesa = false; A.malaMesaSeg = 0; }
-
-      let valida = true;
-      A.desvio = null;
-      if (C.alinearMesa && Gravedad.fresca() && !A.sinMesa) {
-        Gravedad.enCamara(A.arriba);
-        A.desvio = THREE.MathUtils.radToDeg(A.n.angleTo(A.arriba));
-        if (A.desvio > C.toleranciaMesa) {
-          valida = false;
-          A.malaMesaSeg += dt;
-          // Red de seguridad: si nunca coincide (ejes mal interpretados en algún equipo), se apaga
-          if (A.malaMesaSeg > 4) { A.sinMesa = true; console.warn('Nivelación con sensores desactivada: no coincide con la tapa'); }
-        } else {
-          A.malaMesaSeg = 0;
-          A.qa.setFromUnitVectors(A.n, A.arriba);
-          A.q.premultiply(A.qa);
-        }
-      }
-
-      if (valida) {
-        A.invalidaSeg = 0;
-        if (!A.anclado) {
-          // ¿Quieta? Movimiento entre cuadros chico en posición (en u) y en giro
-          const dp = A.p.distanceTo(A.pPrev) / (A.s.x || 1);
-          const dq = THREE.MathUtils.radToDeg(A.q.angleTo(A.qPrev));
-          A.quietoSeg = dp < 0.05 && dq < 3 ? A.quietoSeg + dt : 0;
-          if (A.quietoSeg >= C.estableSeg) A.anclado = true;
-        }
-        A.pPrev.copy(A.p); A.qPrev.copy(A.q);
-        A.pose.compose(A.p, A.q, A.s);
-      } else {
-        // Lectura descartada: se mantiene la última buena; si dura mucho, se suelta el anclaje
-        A.invalidaSeg += dt;
-        if (A.invalidaSeg > 0.6) { A.anclado = false; A.quietoSeg = 0; }
-      }
-
-      // Elevación de la cámara vista desde la tapa (90° = justo arriba)
-      A.cam.copy(this.v.cam).applyMatrix4(A.inv.copy(A.pose).invert());
-      A.elev = THREE.MathUtils.radToDeg(Math.atan2(A.cam.z, Math.hypot(A.cam.x, A.cam.y)));
-      return A.anclado;
-    },
-
-    actualizarPista(crudo) {
-      const C = CONFIG, A = this.ancla;
-      let texto = null;
-      if (!crudo) texto = 'Apuntá a la tapa de la colmena';
-      else if (!A.anclado) texto = 'Mantené el celular quieto un instante';
-      else if (C.guiaAngulo && A.elev != null && A.elev > C.anguloMax) texto = 'Bajá un poco el celular: mirá la colmena en diagonal';
-      else if (C.guiaAngulo && A.elev != null && A.elev < C.anguloMin) texto = 'Subí un poco el celular: mirá la colmena desde más arriba';
-      if (texto === this.textoPista) return;
-      this.textoPista = texto;
-      if (texto) this.pista.textContent = texto;
-      this.pista.classList.toggle('oculto', !texto);
-    },
+    reiniciarAnimacion() { this.simT = 0; },
 
     /* ── FLORES ─────────────────────────────────────────────────────────── */
     prepararFlores() {
@@ -1283,9 +1105,9 @@
 
         // Pasto alrededor de la planta
         for (let k = 0; k < Math.round(C.pasto); k++) {
-          const r = (0.04 + 0.3 * Math.sqrt(rnd())) * tam, a = rnd() * Math.PI * 2;
+          const r = (0.04 + 0.26 * Math.sqrt(rnd())) * tam, a = rnd() * Math.PI * 2;
           brizna(new THREE.Vector3(x + r * Math.cos(a), y + r * Math.sin(a), zMesa), rnd() * Math.PI * 2,
-            (0.1 + 0.22 * rnd()) * tam * (1 - 0.4 * r / (0.34 * tam)));
+            (0.1 + 0.22 * rnd()) * tam * (1 - 0.4 * r / (0.3 * tam)));
         }
       }
       this.jardin.geometry.dispose();
@@ -1414,30 +1236,24 @@
       this.realT += dt;
       this.contarFps(dt);
 
-      this.el.sceneEl.camera.getWorldPosition(this.v.cam);
-      const crudo = this.el.object3D.visible;        // MindAR lo apaga al perder el target
-      const visible = this.actualizarPose(dt);       // pose validada, nivelada y estable
-      this.anclaje.visible = visible;
-      if (visible) { this.anclaje.matrix.copy(this.ancla.pose); this.anclaje.matrixWorldNeedsUpdate = true; }
-      this.actualizarPista(crudo);
+      const visible = this.el.object3D.visible;     // MindAR lo apaga al perder el target
       if (visible) {
         // Si la tapa estuvo fuera de cuadro un buen rato, la animación arranca de nuevo
-        if (CONFIG.reiniciarTrasSeg > 0 && this.perdidoSeg > CONFIG.reiniciarTrasSeg) this.reiniciarAnimacion();
+        if (CONFIG.reiniciarTrasSeg > 0 && this.perdidoSeg > CONFIG.reiniciarTrasSeg) this.simT = 0;
         this.perdidoSeg = 0;
-        // Arranca recién con una buena inclinación de mirada; después sigue aunque cambie
-        const e = this.ancla.elev;
-        if (!this.iniciado && (!CONFIG.esperarAngulo || (e >= CONFIG.anguloMin && e <= CONFIG.anguloMax))) this.iniciado = true;
-        if (this.iniciado) this.simT += dt * CONFIG.velocidad;
+        this.simT += dt * CONFIG.velocidad;
       } else {
         this.perdidoSeg += dt;
       }
+      this.el.sceneEl.camera.getWorldPosition(this.v.cam);
       this.alas.material.opacity = CONFIG.alasOpacidad;
       if (this.uT) { this.uT.value = this.realT; this.uViento.value = CONFIG.viento; }
 
       // Grupo de abejas y flores: sigue a la tapa con filtro
       this.escena.visible = visible;
       if (visible) {
-        this.filtrarPose(this.escenaPose, this.ancla.pose, CONFIG.escenaSuavizado, dt,
+        this.raiz.updateWorldMatrix(true, false);
+        this.filtrarPose(this.escenaPose, this.raiz.matrixWorld, CONFIG.escenaSuavizado, dt,
           this.escenaSaltar, this.escena.matrix);
         this.escena.matrixWorldNeedsUpdate = true;
         this.escenaSaltar = false;
@@ -1523,7 +1339,7 @@
         this.ultimoAudio = this.realT;
         let nivel = 0, brillo = 0;
         if (visible && n > 0) {
-          this.ancla.pose.decompose(this.v.pos, this.v.q, this.v.scl);
+          this.el.object3D.matrixWorld.decompose(this.v.pos, this.v.q, this.v.scl);
           const d = this.v.pos.distanceTo(this.v.cam) / (this.v.scl.x || 1);   // en u (1 u = 46,6 mm)
           const cerca = 1 - smooth(3, 14, d);                                   // ~14 cm → ~65 cm
           brillo = cerca;
@@ -1620,7 +1436,6 @@
     btnEmpezar.disabled = true;
     btnEmpezar.textContent = 'Abriendo cámara…';
     Zumbido.iniciar();                                   // dentro del gesto: desbloquea el audio
-    Gravedad.pedirPermiso();                             // dentro del gesto: iOS pide permiso de movimiento
 
     // Un .mind ausente o corrupto rompe MindAR con un error críptico de msgpack: lo chequeamos antes
     try {
@@ -1653,6 +1468,8 @@
     inicio.querySelector('p').textContent =
       'No se pudo abrir la cámara. La página tiene que estar en HTTPS y hay que dar permiso de cámara.';
   });
+  target.addEventListener('targetFound', () => pista.classList.add('oculto'));
+  target.addEventListener('targetLost', () => pista.classList.remove('oculto'));
 
   btnSonido.addEventListener('click', () => {
     Zumbido.activo = !Zumbido.activo;
@@ -1662,11 +1479,6 @@
 
   /* Panel generado desde esta lista: [clave, etiqueta, min, max, paso, ¿en u?] o [título] */
   const CONTROLES = [
-    ['Anclaje'],
-    ['toleranciaMesa', 'Tolerancia de nivel (°)', 5, 45, 1],
-    ['estableSeg', 'Quieto antes de anclar (s)', 0, 1.5, 0.05],
-    ['anguloMin', 'Inclinación mínima de mirada (°)', 0, 85, 1],
-    ['anguloMax', 'Inclinación máxima de mirada (°)', 5, 90, 1],
     ['Enjambre'],
     ['abejas', 'Cantidad', 5, MAX_ABEJAS, 1],
     ['abejasIniciales', 'Salen juntas al comienzo', 1, 20, 1],
@@ -1689,7 +1501,7 @@
     ['florAlturaMax', 'Tallo máximo', 0.1, 2, 0.05, true],
     ['florTamano', 'Tamaño', 0.5, 3, 0.05],
     ['florSemilla', 'Disposición y tipos (semilla)', 1, 99, 1],
-    ['pasto', 'Pasto por planta', 0, 300, 5],
+    ['pasto', 'Pasto por planta', 0, 120, 1],
     ['viento', 'Viento', 0, 0.2, 0.005],
     ['Salida desde el logo'],
     ['emisorX', 'Centro X', -0.5, 0.5, 0.01, true],
@@ -1706,7 +1518,6 @@
     ['logoInclinacion', 'Inclinación hacia atrás (°)', 0, 90, 1],
     ['logoGiro', 'Giro alrededor de la colmena (°)', 0, 359, 1],
     ['logoAncho', 'Ancho', 0.8, 5, 0.05, true],
-    ['logoSeparacionMin', 'Separación mínima con la colmena', 0, 2, 0.05, true],
     ['logoSuavizado', 'Anti-temblor (s)', 0, 1, 0.05],
     ['Abeja grande'],
     ['abejaGrandeDesdeSeg', 'Sale a los (s)', 0, 40, 0.5],
@@ -1734,9 +1545,6 @@
       <label class="chk"><input type="checkbox" id="chk-oclusor"> Oclusor (rosa)</label>
       <label class="chk"><input type="checkbox" id="chk-ayudas"> Ejes, borde de la tapa y zona de salida</label>
       <label class="chk"><input type="checkbox" id="chk-patas" ${CONFIG.patasEnX ? 'checked' : ''}> Patas del soporte en ±X</label>
-      <label class="chk"><input type="checkbox" id="chk-mesa" ${CONFIG.alinearMesa ? 'checked' : ''}> Nivelar con los sensores (tapa horizontal)</label>
-      <label class="chk"><input type="checkbox" id="chk-angulo" ${CONFIG.esperarAngulo ? 'checked' : ''}> Arrancar recién con buena inclinación</label>
-      <label class="chk"><input type="checkbox" id="chk-guia" ${CONFIG.guiaAngulo ? 'checked' : ''}> Indicaciones de inclinación</label>
       <label class="chk"><input type="checkbox" id="chk-logo" ${CONFIG.mostrarLogo ? 'checked' : ''}> Mostrar logo</label>
       <label class="chk"><input type="checkbox" id="chk-logo3d" ${CONFIG.logo3D ? 'checked' : ''}> Logo en 3D (si no, plano)</label>
       <label class="chk"><input type="checkbox" id="chk-abejag" ${CONFIG.abejaGrande ? 'checked' : ''}> Abeja grande que vuela al logo</label>
@@ -1763,9 +1571,6 @@
     document.getElementById('chk-ayudas').onchange = (e) => { colmena().ayudas.visible = e.target.checked; };
     document.getElementById('chk-patas').onchange = (e) => { CONFIG.patasEnX = e.target.checked; colmena().reconstruir(); };
     document.getElementById('chk-logo').onchange = (e) => { CONFIG.mostrarLogo = e.target.checked; };
-    document.getElementById('chk-mesa').onchange = (e) => { CONFIG.alinearMesa = e.target.checked; };
-    document.getElementById('chk-angulo').onchange = (e) => { CONFIG.esperarAngulo = e.target.checked; };
-    document.getElementById('chk-guia').onchange = (e) => { CONFIG.guiaAngulo = e.target.checked; };
     document.getElementById('chk-logo3d').onchange = (e) => { CONFIG.logo3D = e.target.checked; };
     document.getElementById('chk-abejag').onchange = (e) => { CONFIG.abejaGrande = e.target.checked; };
     panel.querySelectorAll('input[name=logo-modo]').forEach((r) => {
@@ -1807,16 +1612,8 @@
     const c = colmena();
     document.getElementById('fps').textContent = `${c.fps.valor} fps`;
     const dist = document.getElementById('dist');
-    if (!dist) return;
-    const A = c.ancla, partes = [];
-    if (target.object3D.visible && c.distanciaMm) partes.push(`Cámara a ${Math.round(c.distanciaMm / 10)} cm`);
-    if (A.elev != null) partes.push(`mirada a ${Math.round(A.elev)}°`);
-    partes.push(!Gravedad.fresca() ? 'sin sensores'
-      : A.sinMesa ? 'nivelación apagada (no coincide)'
-      : A.desvio != null ? `desvío de nivel ${Math.round(A.desvio)}°` : 'sensores listos');
-    partes.push(A.anclado ? 'anclada' : 'sin anclar');
-    if (c.huecoLogoActual != null) partes.push(`logo a ${Math.round(c.huecoLogoActual * CONFIG.markerMm)} mm de la colmena`);
-    dist.textContent = partes.join(' · ') + '.';
+    if (dist) dist.textContent = target.object3D.visible && c.distanciaMm
+      ? `Cámara a ${Math.round(c.distanciaMm / 10)} cm.` : '';
   }, 500);
   </script>
 </body>
