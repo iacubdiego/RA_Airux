@@ -1,0 +1,1346 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>airux — Experiencia con Realidad Aumentada</title>
+
+  <!-- Versiones fijadas. MindAR 1.2.5 + A-Frame 1.5.0 es la combinación ya probada en la taza. -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+  <!-- Consola en pantalla para depurar en iPhone sin Mac: abrir la URL con ?eruda -->
+  <script>
+    if (location.search.includes('eruda')) {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/eruda@3.0.1/eruda.min.js"><\/script><script>eruda.init();<\/script>');
+    }
+  </script>
+
+  <style>
+    :root {
+      --pla: #fafaf8;        /* blanco del PLA */
+      --naranja: #e8743b;    /* naranja del logo impreso */
+      --carbon: #3f4245;     /* gris de la abeja impresa */
+      --miel: #f0b323;
+      --panel: rgba(28, 30, 32, .9);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    /* Ojo: el fondo va SOLO en html. MindAR pone el <video> de la cámara con z-index negativo,
+       y un fondo en body se pinta encima de él y deja la pantalla en negro. */
+    html { background: #000; }
+
+    /* ── Pantalla de inicio: el toque desbloquea cámara y audio (requisito de iOS) ── */
+    #inicio {
+      position: fixed; inset: 0; z-index: 50;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 1.4rem; padding: 2rem;
+      background: var(--pla); color: var(--carbon); text-align: center;
+      transition: opacity .35s;
+    }
+    #inicio.oculto { opacity: 0; pointer-events: none; }
+    #inicio .portada-logo { width: min(80vw, 420px); height: auto; }
+    #inicio h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; max-width: 20rem; }
+    #inicio p { max-width: 22rem; font-size: 1rem; line-height: 1.45; }
+    #inicio .nota { font-size: .85rem; opacity: .7; }
+    #btn-empezar {
+      border: 0; border-radius: .7rem; padding: .95rem 1.6rem;
+      background: var(--naranja); color: #fff; font: 650 1.05rem/1 inherit;
+      cursor: pointer;
+    }
+    #btn-empezar:focus-visible { outline: 3px solid var(--carbon); outline-offset: 3px; }
+    #btn-empezar:disabled { opacity: .6; }
+
+    /* Logo en modo 'pantalla' */
+    #logo-hud {
+      position: fixed; z-index: 9; pointer-events: none;
+      top: calc(3.8rem + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+      width: min(72vw, 380px); height: auto;
+      opacity: 0; transition: opacity .8s;
+      filter: drop-shadow(0 2px 6px rgba(0,0,0,.35));
+    }
+    #logo-hud.visible { opacity: 1; }
+
+    #pista {
+      position: fixed; left: 50%; bottom: calc(1.5rem + env(safe-area-inset-bottom));
+      transform: translateX(-50%); z-index: 10; pointer-events: none;
+      background: rgba(0,0,0,.72); color: #fff; padding: .6rem 1.1rem; border-radius: 2rem;
+      font-size: .9rem; white-space: nowrap; transition: opacity .3s;
+    }
+    #pista.oculto { opacity: 0; }
+
+    #btn-sonido {
+      position: fixed; left: .7rem; top: calc(.7rem + env(safe-area-inset-top)); z-index: 21;
+      width: 2.6rem; height: 2.6rem; border-radius: 50%; border: 0;
+      background: rgba(0,0,0,.6); color: #fff; font-size: 1.15rem; display: none;
+    }
+
+    /* ── Panel de calibración ── */
+    #btn-cal {
+      position: fixed; right: .7rem; top: calc(.7rem + env(safe-area-inset-top)); z-index: 21;
+      border: 0; border-radius: .5rem; padding: .55rem .8rem;
+      background: rgba(0,0,0,.65); color: #fff; font-size: .85rem; display: none;
+    }
+    #panel {
+      position: fixed; right: .5rem; top: calc(.5rem + env(safe-area-inset-top)); z-index: 22;
+      width: min(270px, 92vw); max-height: 78vh; overflow-y: auto;
+      background: var(--panel); color: #fff; border-radius: .7rem; padding: .8rem .9rem 1rem;
+      font-size: .76rem; line-height: 1.4; display: none;
+    }
+    #panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .3rem; }
+    #panel header strong { font-size: .9rem; }
+    #panel header button { background: none; border: 0; color: #fff; font-size: 1.1rem; padding: .2rem .4rem; }
+    #panel h3 { font-size: .8rem; font-weight: 650; color: var(--miel); margin: .9rem 0 .2rem; }
+    #panel label { display: block; margin-top: .45rem; }
+    #panel .valor { float: right; font-variant-numeric: tabular-nums; color: #bfe8a8; }
+    #panel input[type=range] { width: 100%; accent-color: var(--naranja); }
+    #panel .chk { display: flex; gap: .45rem; align-items: center; margin-top: .45rem; }
+    #panel .acciones { display: flex; gap: .5rem; margin-top: .9rem; }
+    #panel .acciones button {
+      flex: 1; border: 0; border-radius: .45rem; padding: .55rem;
+      background: var(--naranja); color: #fff; font-weight: 600; font-size: .8rem;
+    }
+    #panel .acciones button.sec { background: #555; }
+    #panel pre {
+      margin-top: .6rem; padding: .5rem; background: rgba(255,255,255,.07); border-radius: .4rem;
+      font-size: .66rem; white-space: pre-wrap; word-break: break-all; display: none;
+    }
+    #panel .pie { margin-top: .7rem; opacity: .65; }
+  </style>
+
+  <script>
+  /* ═════════════════════════════════════════════════════════════════════
+     VALORES CALIBRADOS
+     Pegá acá el JSON que copia el botón "Copiar valores" del panel.
+     ═════════════════════════════════════════════════════════════════════
+
+     SISTEMA DE COORDENADAS (espacio del target de MindAR = la tapa)
+
+              +Y  (hacia arriba en la imagen targets/tapa.jpg,
+               ↑   o sea hacia el lado de la abeja y las alas)
+               |
+               |        +Z sale de la tapa hacia el techo
+               ●————→ +X   (el origen es el CENTRO de la cara superior)
+
+     Unidad: 1 u = ancho de la imagen del marker = ancho real de la tapa
+     (CONFIG.markerMm = 46,6 mm). La tapa ocupa X ∈ [−0,5; 0,5] e
+     Y ∈ [−0,593; 0,593]. Lo que está por debajo de la tapa tiene Z < 0.
+
+     Como el contenido se ancla a la tapa y la colmena es simétrica al
+     girarla 180°, da igual de qué lado esté puesta la tapa (y la batería).
+  */
+  const CONFIG = {
+    // Pieza física
+    markerMm: 46.6,        // ancho real de la cara superior de la tapa (= 1 u)
+    altoColmenaMm: 50.6,   // de la cara superior de la tapa hasta la mesa
+    ejeX: 0, ejeY: 0,      // desfase del eje de la colmena respecto del centro de la tapa (u)
+    patasEnX: true,        // las placas-pata del soporte quedan en los extremos ±X
+
+    // Enjambre
+    abejas: 40,
+    abejasIniciales: 5,    // cuántas salen juntas apenas se detecta la tapa
+    intervaloSeg: 0.6,     // después, tiempo entre una abeja nueva y la siguiente (0 = todas juntas)
+    reiniciarTrasSeg: 15,  // si se pierde la tapa más que esto, la animación vuelve a empezar (0 = nunca)
+    alasOpacidad: 0.8,
+    abejaLuz: 0.72,        // luminosidad del naranja de las abejas respecto del logo (1 = igual)
+    abejaSat: 0.7,         // saturación respecto del logo (1 = igual)
+    tamanoMm: 5,           // largo de cada abeja (a escala 1:10 serían 1,5 mm: exageradas a propósito)
+    velocidad: 1,
+    // Viaje de cada abeja: logo → su flor → logo
+    ondulacion: 1,         // cuánto zigzaguean en el camino (0 = curva lisa)
+    arco: 0.35,            // cuánto suben en la mitad del viaje (u)
+    florSeg: 3,            // tiempo medio sobre la flor (s)
+    escenaSuavizado: 0.12, // anti-temblor de abejas y flores (s); la colmena invisible no se filtra
+
+    // Flores (sobre la mesa, a los costados ±X de la colmena)
+    flores: 10,
+    florDistMin: 1.2, florDistMax: 2.2,      // distancia lateral al eje de la colmena (u): ~5,5 a 10 cm
+    florAlturaMin: 0.45, florAlturaMax: 0.85, // largo del tallo (u)
+    florTamano: 1.3,
+    florSemilla: 7,        // cambia la disposición
+
+    // Zona de salida (en coordenadas de la tapa; 0,0 = centro del logo)
+    emisorX: 0, emisorY: 0, emisorRadio: 0.3,
+
+    // Logo
+    mostrarLogo: true,
+    logo3D: true,          // true = modelo en relieve (assets/logo.glb); false = imagen plana (assets/logo.png)
+    logoModo: 'tapa',      // 'tapa' = cartel fijo a la tapa | 'pantalla' = fijo arriba en la pantalla
+    logoDesdeSeg: 4,       // cuándo aparece, contado desde que empieza la animación
+    // Solo modo 'tapa'. Con giro 0 el cartel está del lado de las alas (+Y) y mira hacia −Y,
+    // o sea hacia quien lee la "a" impresa derecha.
+    logoAltura: 0.75,      // altura del centro del cartel sobre la tapa (u)
+    logoDistancia: 0.75,   // cuánto se corre hacia +Y desde el centro de la tapa (u)
+    logoInclinacion: 30,   // cuánto se recuesta hacia atrás (0 = vertical, 90 = acostado)
+    logoGiro: 0,           // gira cartel y posición alrededor del eje de la colmena (grados)
+    logoAncho: 2.0,        // ancho (u)
+    logoSuavizado: 0.25,   // filtro anti-temblor en segundos (0 = sin filtro; más = más quieto pero con retraso)
+
+    // Abeja grande: la abeja del logo sale de la tapa, da una vuelta y se posa en su lugar del logo
+    // (solo con el logo 3D en modo 'tapa')
+    abejaGrande: true,
+    abejaGrandeDesdeSeg: 5,      // cuándo sale de la tapa
+    abejaGrandeEscala: 1.6,      // tamaño en vuelo respecto del logo (al posarse vuelve a 1)
+    abejaGrandeVelocidad: 1,     // >1 = vuelo más corto
+    abejaGrandeRadio: 1.3,       // radio de la vuelta alrededor de la colmena (u)
+    abejaGrandeAltura: 1.0,      // altura de la vuelta (u)
+
+    // Sonido
+    volumen: 0.8,
+  };
+
+  /* Colores tomados de assets/logo.png */
+  const PALETA = { naranja: '#ffb129', marron: '#301807' };
+
+  const MODO_DESARROLLO = true;   // false para la versión final: oculta el botón de calibrar
+  const MAX_ABEJAS = 150;
+  const MAX_FLORES = 30;
+
+  /* Medidas de la colmena en mm, tomadas del 3MF (cuerpo y soporte a escala 0,5) */
+  const PIEZAS_MM = {
+    tapa:   { ancho: 46.6, largo: 55.3, alto: 5.95, techo: 2.2 }, // techo = espesor de la placa superior
+    cuerpo: { ancho: 41.3, largo: 50.0, alto: 24.0 },
+    celdas: 3.0,                                                // separación por las celdas de carga
+    soporte:{ ancho: 50.0, largo: 51.3, losa: 5.85, pata: 4.0 },
+  };
+  </script>
+
+  <script>
+  /* ═════════════════════════════════════════════════════════════════════
+     SONIDO: zumbido sintetizado con Web Audio (sin archivos ni licencias)
+     ═════════════════════════════════════════════════════════════════════ */
+  /* Convierte una muestra en un bucle sin corte: recorta el silencio final y funde el final
+     con el principio (fundido de igual potencia), así no hay "clic" al reiniciar el loop. */
+  function bucleSinCorte(ctx, buf, segCruce) {
+    const canales = [...Array(buf.numberOfChannels)].map((_, c) => buf.getChannelData(c));
+    let fin = buf.length;
+    while (fin > 0 && canales.every((d) => Math.abs(d[fin - 1]) < 1e-3)) fin--;
+    const F = Math.min(Math.floor(segCruce * buf.sampleRate), Math.floor(fin / 3));
+    const L = fin - F;
+    const out = ctx.createBuffer(buf.numberOfChannels, L, buf.sampleRate);
+    canales.forEach((src, c) => {
+      const dst = out.getChannelData(c);
+      dst.set(src.subarray(0, L));
+      for (let j = 0; j < F; j++) {
+        const t = (j / F) * Math.PI / 2;
+        dst[j] = src[j] * Math.sin(t) + src[L + j] * Math.cos(t);
+      }
+    });
+    return out;
+  }
+
+  /* ═════════════════════════════════════════════════════════════════════
+     SONIDO: assets/zumbido.mp3 en bucle (dos capas para dar densidad);
+     si no carga, zumbido sintetizado con Web Audio.
+     ═════════════════════════════════════════════════════════════════════ */
+  const Zumbido = {
+    ctx: null, master: null, filtro: null, capaB: null, modo: null, activo: true,
+
+    // Tiene que llamarse dentro del handler de un toque (iOS)
+    iniciar() {
+      // iOS 17+: sin esto, el switch de silencio apaga Web Audio
+      if ('audioSession' in navigator) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ctx = this.ctx = new AC();
+      this.master = ctx.createGain();
+      this.master.gain.value = 0;
+      this.master.connect(ctx.destination);
+      ctx.resume();
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) ctx.suspend(); else ctx.resume();
+      });
+      this.cargarMuestra().catch((e) => {
+        console.warn('No se pudo usar assets/zumbido.mp3, uso el zumbido sintetizado:', e);
+        this.iniciarSintetico();
+      });
+    },
+
+    async cargarMuestra() {
+      const r = await fetch('./assets/zumbido.mp3');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const datos = await r.arrayBuffer();
+      // Forma con callbacks: la versión con promesa no existe en Safari viejos
+      const buf = await new Promise((ok, mal) => this.ctx.decodeAudioData(datos, ok, mal));
+      const bucle = bucleSinCorte(this.ctx, buf, 1.5);
+      // Lejos = más apagado (pasabajos), cerca = más brillante
+      this.filtro = this.ctx.createBiquadFilter();
+      this.filtro.type = 'lowpass'; this.filtro.frequency.value = 6000;
+      this.filtro.connect(this.master);
+      const capa = (velocidad, desde, ganancia) => {
+        const src = this.ctx.createBufferSource();
+        src.buffer = bucle; src.loop = true; src.playbackRate.value = velocidad;
+        const g = this.ctx.createGain(); g.gain.value = ganancia;
+        src.connect(g); g.connect(this.filtro);
+        src.start(0, desde % bucle.duration);
+        return g;
+      };
+      capa(1, 0, 1);
+      // Segunda capa desfasada y un poco más aguda: entra a medida que salen más abejas
+      this.capaB = capa(1.07, bucle.duration / 2, 0);
+      this.modo = 'muestra';
+    },
+
+    iniciarSintetico() {
+      const ctx = this.ctx;
+      // Formante del zumbido + recorte de agudos
+      this.filtro = ctx.createBiquadFilter();
+      this.filtro.type = 'bandpass'; this.filtro.frequency.value = 450; this.filtro.Q.value = 0.9;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 3200;
+      this.filtro.connect(lp); lp.connect(this.master);
+      const trem = ctx.createGain(); trem.gain.value = 0.8; trem.connect(this.filtro);
+      const lfo = ctx.createOscillator(); lfo.frequency.value = 7.3;
+      const lfoG = ctx.createGain(); lfoG.gain.value = 0.18;
+      lfo.connect(lfoG); lfoG.connect(trem.gain); lfo.start();
+      [212, 219, 228, 241, 255].forEach((f, i) => {
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+        const vib = ctx.createOscillator(); vib.frequency.value = 0.25 + i * 0.17;
+        const vibG = ctx.createGain(); vibG.gain.value = 3 + i;
+        vib.connect(vibG); vibG.connect(o.frequency);
+        const g = ctx.createGain(); g.gain.value = 0.11;
+        o.connect(g); g.connect(trem);
+        o.start(); vib.start();
+      });
+      this.modo = 'sintetico';
+    },
+
+    // nivel 0..1; brillo 0..1 (más cerca = más brillante); densidad 0..1 (fracción de abejas volando)
+    fijar(nivel, brillo, densidad) {
+      if (!this.ctx || !this.modo) return;
+      const t = this.ctx.currentTime;
+      const v = this.activo ? nivel * CONFIG.volumen : 0;
+      if (this.modo === 'muestra') {
+        this.master.gain.setTargetAtTime(v * 0.9, t, 0.25);
+        this.filtro.frequency.setTargetAtTime(1800 + 7000 * brillo, t, 0.3);
+        this.capaB.gain.setTargetAtTime(0.7 * densidad, t, 0.5);
+      } else {
+        this.master.gain.setTargetAtTime(v * 0.5, t, 0.25);
+        this.filtro.frequency.setTargetAtTime(350 + 350 * brillo, t, 0.3);
+      }
+      if (this.ctx.state === 'suspended' && !document.hidden) this.ctx.resume();
+    },
+  };
+
+  /* ═════════════════════════════════════════════════════════════════════
+     UTILIDADES
+     ═════════════════════════════════════════════════════════════════════ */
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+  const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  const mod = (a, n) => ((a % n) + n) % n;
+  /* Curva de Hermite: va de p0 a p1 en T segundos, con velocidad v0 al salir y v1 al llegar.
+     Encadenando tramos con la misma velocidad en la unión, el movimiento no tiene quiebres. */
+  function hermite(p0, v0, p1, v1, T, s, out) {
+    const s2 = s * s, s3 = s2 * s;
+    const a = 2 * s3 - 3 * s2 + 1, b = (s3 - 2 * s2 + s) * T, c = -2 * s3 + 3 * s2, d = (s3 - s2) * T;
+    return out.set(a * p0.x + b * v0.x + c * p1.x + d * v1.x,
+                   a * p0.y + b * v0.y + c * p1.y + d * v1.y,
+                   a * p0.z + b * v0.z + c * p1.z + d * v1.z);
+  }
+  /* Aleatorio con semilla (mulberry32): misma semilla → mismas flores */
+  function aleatorio(semilla) {
+    let a = semilla >>> 0;
+    return () => {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function bezier(p0, p1, p2, p3, t, out) {
+    const u = 1 - t;
+    const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+    return out.set(
+      a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+      a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+      a * p0.z + b * p1.z + c * p2.z + d * p3.z);
+  }
+
+  /* Geometría de una abeja, largo ≈ 1. Ejes locales: +Z adelante, +Y arriba, +X derecha. */
+  function geometriaAbeja() {
+    const NARANJA = 0, MARRON = 1;   // tipo de cada vértice; los colores se aplican en pintarAbeja()
+
+    const cuerpo = new THREE.SphereGeometry(0.5, 18, 12).toNonIndexed();
+    cuerpo.scale(0.34, 0.34, 0.86); cuerpo.translate(0, 0, -0.06);
+    const cabeza = new THREE.SphereGeometry(0.15, 10, 8).toNonIndexed();
+    cabeza.translate(0, 0.02, 0.44);
+
+    const partes = [
+      [cuerpo, (z) => {
+        if (z > 0.08) return MARRON;                                         // tórax
+        if (z < -0.42) return MARRON;                                        // aguijón
+        return Math.floor((0.08 - z) / 0.1) % 2 === 0 ? NARANJA : MARRON;   // rayas del abdomen
+      }],
+      [cabeza, () => MARRON],
+    ];
+    const pos = [], nor = [], tipos = [];
+    for (const [g, colorDe] of partes) {
+      const p = g.attributes.position, n = g.attributes.normal;
+      for (let i = 0; i < p.count; i++) {
+        pos.push(p.getX(i), p.getY(i), p.getZ(i));
+        nor.push(n.getX(i), n.getY(i), n.getZ(i));
+        tipos.push(colorDe(p.getZ(i)));
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(tipos.length * 3), 3));
+    geo.userData.tipos = tipos;
+    pintarAbeja(geo);
+    return geo;
+  }
+
+  /* Colores de la abeja: el naranja del logo, apagado según CONFIG.abejaLuz / abejaSat */
+  function colorNaranjaAbeja() {
+    const hsl = {};
+    const c = new THREE.Color(PALETA.naranja);
+    c.getHSL(hsl, THREE.SRGBColorSpace);
+    return c.setHSL(hsl.h, clamp(hsl.s * CONFIG.abejaSat, 0, 1), clamp(hsl.l * CONFIG.abejaLuz, 0, 1),
+      THREE.SRGBColorSpace);
+  }
+  function pintarAbeja(geo) {
+    const cols = [colorNaranjaAbeja(), new THREE.Color(PALETA.marron)];
+    const attr = geo.attributes.color;
+    geo.userData.tipos.forEach((t, i) => attr.setXYZ(i, cols[t].r, cols[t].g, cols[t].b));
+    attr.needsUpdate = true;
+  }
+
+  /* Ala derecha: elipse acostada en el plano XZ, con la raíz en el origen y la punta hacia +X */
+  function geometriaAla() {
+    const g = new THREE.CircleGeometry(0.5, 14);
+    g.scale(0.58, 0.26, 1);
+    g.translate(0.29, 0, 0);
+    g.rotateX(-Math.PI / 2);
+    return g;
+  }
+
+  /* ═════════════════════════════════════════════════════════════════════
+     COMPONENTE PRINCIPAL: va sobre la entidad mindar-image-target
+     ═════════════════════════════════════════════════════════════════════ */
+  AFRAME.registerComponent('colmena', {
+    init() {
+      this.raiz = new THREE.Group();          // espacio de la tapa (ver diagrama arriba)
+      this.el.object3D.add(this.raiz);
+
+      // Datos aleatorios fijos por abeja (normalizados 0..1, se escalan con CONFIG en cada frame,
+      // así los sliders cambian el enjambre en vivo sin re-sortear nada)
+      const R = Math.random;
+      this.abejas = Array.from({ length: MAX_ABEJAS }, () => ({
+        r0: R(), h0: R(), l0: R(), p0: R(), n0: R(), e0: R(), e1: R(), fl: R(), fo: R() * 6.28, fr2: R(),
+        fase: R() * Math.PI * 2, dir: R() < 0.5 ? -1 : 1, omega: 0.45 + R() * 0.8,
+        fr: 0.3 + R() * 0.6, fh: 0.4 + R() * 0.7, f2: R() * 6.28, f3: R() * 6.28,
+        prevX: new THREE.Vector3(1, 0, 0), prevZ: new THREE.Vector3(0, 0, 1),
+        vj: {   // plan del viaje (se recalcula cada cuadro, sin crear objetos)
+          E: new THREE.Vector3(), A: new THREE.Vector3(), Fl: new THREE.Vector3(), Fa: new THREE.Vector3(),
+          B: new THREE.Vector3(), vE: new THREE.Vector3(), vA: new THREE.Vector3(), vB: new THREE.Vector3(),
+          vR: new THREE.Vector3(), lat1: new THREE.Vector3(), lat2: new THREE.Vector3(), cero: new THREE.Vector3(),
+          tS: 0, tI: 0, tF: 0, tV: 0, tR: 0, L: 0,
+        },
+        posada: 0,
+      }));
+
+      // Abejas y flores viven en "escena": un grupo que sigue a la tapa con un filtro anti-temblor
+      // (las flores están lejos del marker y amplificarían cualquier temblor del tracking)
+      this.escena = new THREE.Group();
+      this.escena.matrixAutoUpdate = false;
+      this.escena.visible = false;
+      this.el.sceneEl.object3D.add(this.escena);
+      this.escenaPose = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(1, 1, 1) };
+      this.poseTmp = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3() };
+      this.escenaSaltar = true;
+
+      // Instancias: una sola llamada de dibujo para todos los cuerpos y otra para todas las alas
+      this.cuerpos = new THREE.InstancedMesh(geometriaAbeja(),
+        new THREE.MeshLambertMaterial({ vertexColors: true }), MAX_ABEJAS);
+      this.alas = new THREE.InstancedMesh(geometriaAla(),
+        new THREE.MeshBasicMaterial({ color: PALETA.marron, transparent: true, opacity: CONFIG.alasOpacidad,
+          side: THREE.DoubleSide, depthWrite: false }), MAX_ABEJAS * 2);
+      this.alas.renderOrder = 2;   // después del logo, así las alas que pasan por delante se ven bien
+      for (const m of [this.cuerpos, this.alas]) {
+        m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        m.frustumCulled = false;     // las instancias se reparten lejos de la geometría base
+        this.escena.add(m);
+      }
+      this.prepararFlores();
+
+      this.crearLogo();
+
+      this.oclusor = new THREE.Group();
+      this.raiz.add(this.oclusor);
+      this.ayudas = new THREE.Group();
+      this.ayudas.visible = false;
+      this.raiz.add(this.ayudas);
+      this.verOclusor = false;
+      this.reconstruir();
+
+      // Temporales (evitamos crear objetos en cada frame)
+      this.v = {
+        P: new THREE.Vector3(), Pa: new THREE.Vector3(), Pb: new THREE.Vector3(), V: new THREE.Vector3(),
+        A: new THREE.Vector3(), B: new THREE.Vector3(), C: new THREE.Vector3(), D: new THREE.Vector3(),
+        E: new THREE.Vector3(), F: new THREE.Vector3(), X: new THREE.Vector3(), Y: new THREE.Vector3(),
+        Z: new THREE.Vector3(), S: new THREE.Vector3(), UP: new THREE.Vector3(0, 0, 1),
+        cam: new THREE.Vector3(), pos: new THREE.Vector3(), q: new THREE.Quaternion(), scl: new THREE.Vector3(),
+      };
+      this.m = {
+        M: new THREE.Matrix4(), W: new THREE.Matrix4(), Wl: new THREE.Matrix4(),
+        T: new THREE.Matrix4(), Rz: new THREE.Matrix4(), Ry: new THREE.Matrix4().makeRotationY(0.55),
+        ESPEJO: new THREE.Matrix4().makeScale(-1, 1, 1), CERO: new THREE.Matrix4().makeScale(0, 0, 0),
+      };
+      this.simT = 0; this.realT = 0; this.ultimoAudio = 0; this.perdidoSeg = 0;
+      this.fps = { n: 0, t: 0, valor: 0 };
+    },
+
+    /* Oclusor y ayudas visuales: se rehacen cuando cambia algún valor físico */
+    reconstruir() {
+      const u = (mm) => mm / CONFIG.markerMm;
+      const P = PIEZAS_MM;
+      [this.oclusor, this.ayudas].forEach((g) => {
+        while (g.children.length) {
+          const c = g.children.pop();
+          c.geometry && c.geometry.dispose();
+          c.material && c.material.dispose();
+        }
+      });
+      this.oclusor.position.set(CONFIG.ejeX, CONFIG.ejeY, 0);
+
+      const matOculto = new THREE.MeshBasicMaterial({ colorWrite: false });   // invisible, escribe profundidad
+      const matDebug = new THREE.MeshBasicMaterial({ color: 0xff2f6d, transparent: true, opacity: 0.3, depthWrite: false });
+      const caja = (ancho, largo, alto, x, y, zTecho) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(u(ancho), u(largo), u(alto)),
+          this.verOclusor ? matDebug : matOculto);
+        m.position.set(u(x), u(y), u(zTecho) - u(alto) / 2);
+        m.renderOrder = this.verOclusor ? 2 : -1;   // se dibuja antes que las abejas
+        this.oclusor.add(m);
+      };
+      // Todas las Z en mm, negativas hacia abajo desde la cara superior de la tapa
+      const zCuerpo = -P.tapa.techo;
+      const zLosa = zCuerpo - P.cuerpo.alto - P.celdas;
+      const zPatas = zLosa - P.soporte.losa;
+      const altoPatas = Math.max(1, CONFIG.altoColmenaMm + zPatas);
+      caja(P.tapa.ancho, P.tapa.largo, P.tapa.alto, 0, 0, 0);
+      caja(P.cuerpo.ancho, P.cuerpo.largo, P.cuerpo.alto, 0, 0, zCuerpo);
+      caja(P.soporte.ancho, P.soporte.largo, P.soporte.losa, 0, 0, zLosa);
+      if (CONFIG.patasEnX) {
+        const x = P.soporte.ancho / 2 - P.soporte.pata / 2;
+        caja(P.soporte.pata, P.soporte.largo, altoPatas, x, 0, zPatas);
+        caja(P.soporte.pata, P.soporte.largo, altoPatas, -x, 0, zPatas);
+      } else {
+        const y = P.soporte.largo / 2 - P.soporte.pata / 2;
+        caja(P.soporte.ancho, P.soporte.pata, altoPatas, 0, y, zPatas);
+        caja(P.soporte.ancho, P.soporte.pata, altoPatas, 0, -y, zPatas);
+      }
+
+      // Ayudas: ejes, contorno del marker (debe coincidir con el borde de la tapa) y zona de salida
+      this.ayudas.add(new THREE.AxesHelper(0.6));
+      const h = u(P.tapa.largo) / 2;
+      const contorno = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-0.5, -h, 0.004), new THREE.Vector3(0.5, -h, 0.004),
+        new THREE.Vector3(0.5, h, 0.004), new THREE.Vector3(-0.5, h, 0.004)]);
+      this.ayudas.add(new THREE.LineLoop(contorno, new THREE.LineBasicMaterial({ color: 0x00e5ff })));
+      const anillo = new THREE.Mesh(
+        new THREE.RingGeometry(Math.max(0.001, CONFIG.emisorRadio - 0.01), CONFIG.emisorRadio + 0.01, 40),
+        new THREE.MeshBasicMaterial({ color: 0xffd400, side: THREE.DoubleSide }));
+      anillo.position.set(CONFIG.emisorX, CONFIG.emisorY, 0.005);
+      this.ayudas.add(anillo);
+    },
+
+    /* Logo, dos modos:
+       'tapa'     → cartel fijo a la tapa. Vive en la escena (no dentro del target) para poder
+                    filtrarle la pose: así no tiembla aunque el tracking tiemble.
+       'pantalla' → <img> fija arriba en la pantalla (cero temblor, pero no es AR). */
+    crearLogo() {
+      // Contenedor: a él se le aplica la pose filtrada. Adentro van la versión plana y la 3D.
+      this.logo = new THREE.Group();
+      this.logo.visible = false;
+      this.logo.matrixAutoUpdate = false;
+      this.el.sceneEl.object3D.add(this.logo);
+
+      // Versión plana (respaldo si no hay GLB, o si se elige en el panel)
+      const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false,
+        side: THREE.DoubleSide });
+      this.logoPlano = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);   // plano XY, mira a +Z
+      this.logoPlano.renderOrder = 1;
+      this.logoPlano.scale.set(1, 221 / 585, 1);                              // se corrige al cargar
+      this.logo.add(this.logoPlano);
+      new THREE.TextureLoader().load('./assets/logo.png', (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = 4;
+        this.logoPlano.scale.set(1, tex.image.height / tex.image.width, 1);
+        mat.map = tex; mat.needsUpdate = true;
+      }, undefined, () => console.error('No se pudo cargar assets/logo.png'));
+
+      // Versión 3D: mismo sistema que el plano (ancho 1, centrado, frente hacia +Z, arriba +Y)
+      this.logo3d = null;
+      if (THREE.GLTFLoader) {
+        new THREE.GLTFLoader().load('./assets/logo.glb', (gltf) => {
+          this.logo3d = gltf.scene;
+          this.logo3dMats = [];
+          this.logo3d.traverse((n) => {
+            if (n.isMesh) {
+              n.renderOrder = 1;
+              // Alinear con el estado actual del fundido (el GLB puede llegar a mitad de camino)
+              n.material.transparent = this.logoOpacidad < 1;
+              n.material.depthWrite = this.logoOpacidad >= 1;
+              n.material.opacity = Math.max(0, this.logoOpacidad);
+              this.logo3dMats.push(n.material);
+            }
+          });
+          this.logo.add(this.logo3d);
+          this.prepararAbejaGrande();
+        }, undefined, (e) => console.error('No se pudo cargar assets/logo.glb', e));
+      } else {
+        console.warn('THREE.GLTFLoader no disponible: se usa el logo plano');
+      }
+
+      this.logoOpacidad = 1;          // estado "opaco": la primera llamada con a < 1 activa el fundido
+      this.logoSaltar = true;         // la primera pose (o tras perder la tapa) se copia sin filtrar
+      this.logoPose = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(1, 1, 1) };
+      this.logoMeta = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(),
+        local: new THREE.Matrix4(), localTapa: new THREE.Matrix4(), qTapa: new THREE.Quaternion(), sTapa: 1,
+        qGiro: new THREE.Quaternion(), qInc: new THREE.Quaternion(),
+        ejeX: new THREE.Vector3(1, 0, 0), ejeZ: new THREE.Vector3(0, 0, 1) };
+      this.hud = document.getElementById('logo-hud');
+      this.hudVisible = false;
+    },
+
+    /* La abeja del logo viene en el GLB como nodo propio ("abeja") con las alas articuladas */
+    prepararAbejaGrande() {
+      const nodo = this.logo3d.getObjectByName('abeja');
+      if (!nodo || !nodo.userData.adelante) { console.warn('El GLB no trae la abeja separada'); return; }
+      const alas = ['ala_a', 'ala_b'].map((n) => this.logo3d.getObjectByName(n)).filter(Boolean);
+      // Sus materiales son propios: no participan del fundido del logo
+      const mats = new Set();
+      nodo.traverse((n) => { if (n.isMesh) mats.add(n.material); });
+      this.logo3dMats = this.logo3dMats.filter((m) => !mats.has(m));
+      mats.forEach((m) => { m.transparent = false; m.opacity = 1; m.needsUpdate = true; });
+      const f0 = new THREE.Vector3().fromArray(nodo.userData.adelante).normalize();
+      const n0 = new THREE.Vector3(0, 0, 1);
+      this.abejaG = {
+        nodo, alas, f0,
+        reposo: nodo.position.clone(),
+        // Base de la abeja en reposo (coords del logo): derecha, adelante, arriba
+        baseReposo: new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(f0, n0), f0, n0),
+        adelantePrevio: new THREE.Vector3(1, 0, 0),
+        pts: Array.from({ length: 7 }, () => new THREE.Vector3()),
+        t: { p: new THREE.Vector3(), pa: new THREE.Vector3(), pb: new THREE.Vector3(), d: new THREE.Vector3(),
+             r: new THREE.Vector3(), u: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(),
+             m: new THREE.Matrix4(), inv: new THREE.Matrix4(), n: new THREE.Vector3() },
+      };
+    },
+
+    /* Recorrido en coordenadas de la tapa: sale del logo impreso, sube, da 3/4 de vuelta alrededor
+       de la colmena, se acerca de frente al cartel y se posa en su lugar. Catmull-Rom entre puntos. */
+    rutaAbejaGrande() {
+      const C = CONFIG, A = this.abejaG, P = A.pts, M = this.logoMeta;
+      P[6].copy(A.reposo).applyMatrix4(M.localTapa);                      // lugar en el logo
+      A.t.n.set(0, 0, 1).applyQuaternion(M.qTapa);                         // hacia dónde mira el logo
+      P[5].copy(P[6]).addScaledVector(A.t.n, 0.55);                        // aproximación, de frente
+      P[0].set(C.emisorX, C.emisorY, -0.02);                               // dentro del logo impreso
+      P[1].copy(P[0]); P[1].z += 0.6;
+      const aAp = Math.atan2(P[5].y - C.ejeY, P[5].x - C.ejeX);
+      const R = C.abejaGrandeRadio, h = C.abejaGrandeAltura;
+      [Math.PI / 2, Math.PI, 1.5 * Math.PI].forEach((da, i) => {
+        P[2 + i].set(C.ejeX + R * Math.cos(aAp + da), C.ejeY + R * Math.sin(aAp + da), h + (i === 1 ? 0.2 : 0));
+      });
+      const v = Math.max(0.2, C.abejaGrandeVelocidad);
+      return [1.0, 1.3, 1.4, 1.4, 1.5, 1.8].map((d) => d / v);            // duración de cada tramo
+    },
+
+    puntoRuta(durs, t, out) {
+      const P = this.abejaG.pts, n = P.length - 1;
+      let i = 0;
+      while (i < n - 1 && t > durs[i]) { t -= durs[i]; i++; }
+      const u = clamp(t / durs[i], 0, 1);
+      const p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(n, i + 2)];
+      const u2 = u * u, u3 = u2 * u;
+      for (const k of ['x', 'y', 'z']) {
+        out[k] = 0.5 * (2 * p1[k] + (-p0[k] + p2[k]) * u + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * u2
+          + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * u3);
+      }
+      return out;
+    },
+
+    actualizarAbejaGrande(visible) {
+      const C = CONFIG, A = this.abejaG;
+      if (!A) return;
+      const { nodo, alas } = A;
+      const enReposo = () => {
+        nodo.position.copy(A.reposo); nodo.quaternion.identity(); nodo.scale.set(1, 1, 1);
+      };
+      const aletear = (amp) => {
+        const th = amp * (0.55 + 0.45 * Math.sin(this.realT * Math.PI * 2 * 13));
+        alas.forEach((a) => a.quaternion.setFromAxisAngle(A.f0, (a.userData.lado || 1) * th));
+      };
+      if (!C.abejaGrande) { nodo.visible = true; enReposo(); aletear(0); return; }
+
+      const tb = this.simT - C.abejaGrandeDesdeSeg;
+      nodo.visible = tb >= 0;
+      if (tb < 0) return;
+      const durs = this.rutaAbejaGrande();
+      const total = durs.reduce((a, b) => a + b, 0);
+      if (tb >= total) {
+        // Posada: de vez en cuando abre las alas un momento
+        enReposo();
+        const ph = (tb - total) % 6;
+        aletear(ph < 0.7 ? 0.5 * Math.sin(Math.PI * ph / 0.7) : 0);
+        return;
+      }
+
+      const T = A.t, M = this.logoMeta, UP = this.v.UP;
+      this.puntoRuta(durs, tb, T.p);
+      this.puntoRuta(durs, Math.min(total, tb + 0.02), T.pb);
+      this.puntoRuta(durs, Math.max(0, tb - 0.02), T.pa);
+      T.d.subVectors(T.pb, T.pa);
+      // Mientras sube vertical no hay "adelante" claro: mira hacia el primer punto de la vuelta
+      const horiz = Math.hypot(T.d.x, T.d.y);
+      if (tb < durs[0] * 0.8 || horiz < 0.25 * T.d.length()) {
+        T.d.set(A.pts[2].x - A.pts[1].x, A.pts[2].y - A.pts[1].y, 0);
+        if (T.d.lengthSq() < 1e-8) T.d.copy(A.adelantePrevio);
+      }
+      T.d.normalize(); A.adelantePrevio.copy(T.d);
+      T.r.crossVectors(T.d, UP).normalize();
+      T.u.crossVectors(T.r, T.d);
+      // Rotación en vuelo: lleva (derecha, adelante, arriba) de la abeja a (r, d, u) de la tapa
+      T.m.makeBasis(T.r, T.d, T.u).multiply(T.inv.copy(A.baseReposo).transpose());
+      T.q.setFromRotationMatrix(T.m);
+
+      // Último tramo: se orienta como en el logo, achica al tamaño del logo y frena las alas
+      const tAterr = total - durs[durs.length - 1];
+      const e = smooth(tAterr, total, tb);
+      T.q.slerp(M.qTapa, e);
+      // (nunca escala 0: decompose() daría NaN)
+      const k = M.sTapa * lerp(C.abejaGrandeEscala, 1, e) * Math.max(1e-3, smooth(0, 0.4, tb));
+      T.s.set(k, k, k);
+      T.m.compose(T.p, T.q, T.s);
+
+      // Pasar de coordenadas de la tapa a coordenadas del logo (el nodo es hijo del logo)
+      T.inv.copy(M.localTapa).invert();
+      T.m.premultiply(T.inv);
+      T.m.decompose(nodo.position, nodo.quaternion, nodo.scale);
+      aletear(1.1 * (1 - e));
+    },
+
+    /* Fundido de entrada. Cuando termina, todo pasa a opaco y escribe profundidad,
+       así las abejas que pasan por detrás quedan bien tapadas. */
+    opacidadLogo(a) {
+      if (a === this.logoOpacidad) return;
+      const opaco = a >= 1, cambio = opaco !== (this.logoOpacidad >= 1);
+      this.logoOpacidad = a;
+      const mp = this.logoPlano.material;
+      mp.opacity = a;
+      if (cambio) { mp.alphaTest = opaco ? 0.4 : 0; mp.depthWrite = opaco; mp.needsUpdate = true; }
+      for (const m of this.logo3dMats || []) {
+        m.opacity = a;
+        if (cambio) { m.transparent = !opaco; m.depthWrite = opaco; m.needsUpdate = true; }
+      }
+    },
+
+    actualizarLogo(visible, dt) {
+      const C = CONFIG, lg = this.logo;
+      const aparicion = C.mostrarLogo && visible ? smooth(C.logoDesdeSeg, C.logoDesdeSeg + 1.5, this.simT) : 0;
+
+      // Modo pantalla: solo prender/apagar la <img> (la transición la hace el CSS)
+      const hud = C.logoModo === 'pantalla' && aparicion > 0;
+      if (hud !== this.hudVisible) { this.hudVisible = hud; this.hud.classList.toggle('visible', hud); }
+
+      const usar3D = C.logo3D && !!this.logo3d;
+      const listo = usar3D || !!this.logoPlano.material.map;
+      const abejaVolando = usar3D && !!this.abejaG && C.abejaGrande && C.mostrarLogo && visible
+        && this.simT >= C.abejaGrandeDesdeSeg;
+      lg.visible = C.logoModo === 'tapa' && listo && (aparicion > 0 || abejaVolando);
+      if (!lg.visible) { this.logoSaltar = true; return; }
+      this.logoPlano.visible = !usar3D;
+      if (this.logo3d) this.logo3d.visible = usar3D;
+
+      // 1) Pose deseada en coordenadas de la tapa
+      const M = this.logoMeta, deg = THREE.MathUtils.degToRad;
+      const g = deg(C.logoGiro);
+      M.p.set(C.ejeX - Math.sin(g) * C.logoDistancia, C.ejeY + Math.cos(g) * C.logoDistancia, C.logoAltura);
+      // El logo mira a +Z; lo levantamos girando en X (90° = vertical mirando a −Y) menos la inclinación
+      M.qInc.setFromAxisAngle(M.ejeX, Math.PI / 2 - deg(C.logoInclinacion));
+      M.qGiro.setFromAxisAngle(M.ejeZ, g);
+      M.q.multiplyQuaternions(M.qGiro, M.qInc);
+      const k = C.logoAncho * (0.9 + 0.1 * aparicion);
+      M.s.set(k, k, k);
+      M.local.compose(M.p, M.q, M.s);
+      M.localTapa.copy(M.local); M.qTapa.copy(M.q); M.sTapa = k;          // para la abeja grande
+
+      // 2) Pasarla a coordenadas de la escena con la pose actual de la tapa
+      this.raiz.updateWorldMatrix(true, false);
+      M.local.premultiply(this.raiz.matrixWorld);
+      M.local.decompose(M.p, M.q, M.s);
+
+      // 3) Filtro exponencial: se acerca a la pose nueva sin seguir el temblor cuadro a cuadro
+      const P = this.logoPose;
+      if (this.logoSaltar || C.logoSuavizado <= 0) {
+        P.p.copy(M.p); P.q.copy(M.q); P.s.copy(M.s);
+        this.logoSaltar = false;
+      } else {
+        const a = 1 - Math.exp(-dt / C.logoSuavizado);
+        P.p.lerp(M.p, a); P.q.slerp(M.q, a); P.s.lerp(M.s, a);
+      }
+      lg.matrix.compose(P.p, P.q, P.s);
+      lg.matrixWorldNeedsUpdate = true;
+
+      this.opacidadLogo(aparicion);
+      if (usar3D) this.actualizarAbejaGrande(visible);
+    },
+
+    reiniciarAnimacion() { this.simT = 0; },
+
+    /* ── FLORES ─────────────────────────────────────────────────────────── */
+    prepararFlores() {
+      const lambert = (c) => new THREE.MeshLambertMaterial({ color: c });
+      const unidad = () => new THREE.SphereGeometry(1, 10, 6);
+      const tallo = new THREE.CylinderGeometry(1, 1, 1, 6);
+      tallo.rotateX(Math.PI / 2); tallo.translate(0, 0, 0.5);       // eje +Z, base en el origen
+      const alargada = unidad(); alargada.translate(1, 0, 0);          // pétalo/hoja: raíz en el origen, hacia +X
+      const hoja = alargada.clone();
+      this.fl = {
+        tallos: new THREE.InstancedMesh(tallo, lambert('#5a8a3c'), MAX_FLORES),
+        hojas: new THREE.InstancedMesh(hoja, lambert('#4f8a3a'), MAX_FLORES * 2),
+        centros: new THREE.InstancedMesh(unidad(), lambert('#ffffff'), MAX_FLORES),
+        petalos: new THREE.InstancedMesh(alargada, lambert('#ffffff'), MAX_FLORES * 8),
+      };
+      Object.values(this.fl).forEach((m) => { m.frustumCulled = false; m.count = 0; this.escena.add(m); });
+      this.flores = [];
+      this.crearFlores();
+    },
+
+    crearFlores() {
+      const C = CONFIG, F = this.fl;
+      const rnd = aleatorio(Math.round(C.florSemilla) * 9973 + 1);
+      const n = clamp(Math.round(C.flores), 0, MAX_FLORES);
+      const tam = C.florTamano;
+      const zMesa = -C.altoColmenaMm / C.markerMm;
+      const colores = ['#f3efe6', '#c9a0dc', '#e889a8', '#f2c94c', '#8fa6e8', '#f6f6f6'];
+      const Z = new THREE.Vector3(0, 0, 1), q = new THREE.Quaternion(), qa = new THREE.Quaternion();
+      const m = new THREE.Matrix4(), m2 = new THREE.Matrix4(), col = new THREE.Color();
+      const pos = new THREE.Vector3(), esc = new THREE.Vector3();
+      const ubicadas = [];
+      this.flores = [];
+      let np = 0, nh = 0;
+
+      for (let i = 0; i < n; i++) {
+        // Posición: alternando lados, separadas entre sí
+        const lado = i % 2 ? 1 : -1;
+        let x = 0, y = 0;
+        for (let intento = 0; intento < 40; intento++) {
+          x = C.ejeX + lado * lerp(C.florDistMin, C.florDistMax, rnd());
+          y = C.ejeY + lerp(-1.4, 1.4, rnd());
+          if (ubicadas.every(([ux, uy]) => Math.hypot(ux - x, uy - y) > 0.42 * tam)) break;
+        }
+        ubicadas.push([x, y]);
+        const H = lerp(C.florAlturaMin, C.florAlturaMax, rnd());
+        // Tallo apenas inclinado: la cabeza mira hacia donde apunta el tallo
+        const az = rnd() * Math.PI * 2, inc = THREE.MathUtils.degToRad(6 + 16 * rnd());
+        const nrm = new THREE.Vector3(Math.sin(inc) * Math.cos(az), Math.sin(inc) * Math.sin(az), Math.cos(inc));
+        q.setFromUnitVectors(Z, nrm);
+        const base = new THREE.Vector3(x, y, zMesa);
+        const cabeza = base.clone().addScaledVector(nrm, H);
+
+        F.tallos.setMatrixAt(i, m.compose(base, q, esc.set(0.016 * tam, 0.016 * tam, H)));
+        F.centros.setMatrixAt(i, m.compose(cabeza, q, esc.set(0.055 * tam, 0.055 * tam, 0.03 * tam)));
+        F.centros.setColorAt(i, col.set(rnd() < 0.7 ? '#e0a020' : '#7a4a1a'));
+
+        // Pétalos alrededor del centro, levantados un poco
+        const nPet = 6 + Math.floor(rnd() * 3);
+        const cPet = colores[Math.floor(rnd() * colores.length)];
+        for (let k = 0; k < nPet; k++) {
+          qa.setFromAxisAngle(Z, (k / nPet) * Math.PI * 2 + az);
+          m.compose(cabeza, q, esc.set(1, 1, 1));
+          m2.makeRotationFromQuaternion(qa); m.multiply(m2);
+          m2.makeRotationY(-0.32); m.multiply(m2);
+          m2.makeScale(0.052 * tam, 0.032 * tam, 0.01 * tam); m.multiply(m2);
+          F.petalos.setMatrixAt(np, m);
+          F.petalos.setColorAt(np, col.set(cPet).offsetHSL(0, 0, (rnd() - 0.5) * 0.06));
+          np++;
+        }
+        // Dos hojas a distintas alturas del tallo
+        for (let k = 0; k < 2; k++) {
+          pos.copy(base).addScaledVector(nrm, H * (0.25 + 0.25 * k));
+          qa.setFromAxisAngle(Z, az + Math.PI * k + rnd());
+          m.compose(pos, q, esc.set(1, 1, 1));
+          m2.makeRotationFromQuaternion(qa); m.multiply(m2);
+          m2.makeRotationY(-0.6); m.multiply(m2);
+          m2.makeScale(0.07 * tam, 0.026 * tam, 0.006 * tam); m.multiply(m2);
+          F.hojas.setMatrixAt(nh++, m);
+        }
+        // Donde se posan las abejas: arriba del centro
+        this.flores.push({ cabeza: cabeza.addScaledVector(nrm, 0.03 * tam), normal: nrm, tam });
+      }
+      F.tallos.count = n; F.centros.count = n; F.petalos.count = np; F.hojas.count = nh;
+      Object.values(F).forEach((mm) => {
+        mm.instanceMatrix.needsUpdate = true;
+        if (mm.instanceColor) mm.instanceColor.needsUpdate = true;
+      });
+    },
+
+    /* ── VIAJE DE CADA ABEJA ─────────────────────────────────────────────
+       Tramos (todos en coordenadas de la tapa):
+         S salida   E (dentro del logo) → A (encima)              Hermite
+         I ida      A → Fa (encima de su flor)                      Hermite + arco + ondulación
+         F flor     Fa → baja → posada en Fl → sube → Fa            perfil suave, con giros
+         V vuelta   Fa → B (encima del logo)                        Hermite + arco + ondulación
+         R regreso  B → E                                           Hermite
+       Las velocidades coinciden en cada unión, y en Fa es cero (la abeja frena para posarse). */
+    planViaje(b) {
+      const C = CONFIG, v = b.vj, UP = this.v.UP;
+      this.emisor(b, v.E);
+      v.A.copy(v.E); v.A.z += 0.5;
+      v.B.copy(v.E); v.B.z += 0.55;
+      if (this.flores.length) {
+        const f = this.flores[Math.floor(b.fl * this.flores.length) % this.flores.length];
+        const r = 0.035 * f.tam * Math.sqrt(b.fr2);
+        v.Fl.copy(f.cabeza); v.Fl.x += r * Math.cos(b.fo); v.Fl.y += r * Math.sin(b.fo);
+      } else {
+        // Sin flores: un punto en el aire alrededor de la colmena
+        v.Fl.set(C.ejeX + 1.6 * Math.cos(b.fase), C.ejeY + 1.6 * Math.sin(b.fase), 0.3);
+      }
+      v.Fa.copy(v.Fl); v.Fa.z += 0.28;
+      const vel = 0.9 * (0.8 + 0.4 * b.r0);
+      // Al salir mira hacia su flor; al volver llega desde el lado de la flor
+      v.lat1.set(v.Fa.x - v.A.x, v.Fa.y - v.A.y, 0);
+      if (v.lat1.lengthSq() < 1e-8) v.lat1.set(1, 0, 0);
+      v.lat1.normalize();
+      v.vA.copy(v.lat1).multiplyScalar(0.7 * vel).addScaledVector(UP, 0.35 * vel);
+      v.vB.copy(v.lat1).multiplyScalar(-0.6 * vel).addScaledVector(UP, -0.25 * vel);
+      v.vE.set(0, 0, 1.0);
+      v.vR.set(0, 0, -0.7);
+      v.lat2.crossVectors(v.lat1, UP);                   // perpendicular horizontal al camino
+      const dI = v.A.distanceTo(v.Fa), dV = v.Fa.distanceTo(v.B);
+      v.tS = 1.2;
+      v.tI = Math.max(1.6, 1.3 * dI / vel);
+      v.tF = C.florSeg * (0.6 + 0.8 * b.h0);
+      v.tV = Math.max(1.6, 1.3 * dV / vel) * (0.9 + 0.2 * b.l0);
+      v.tR = 1.6;
+      v.L = v.tS + v.tI + v.tF + v.tV + v.tR;
+    },
+
+    /* Desvío del camino: ondula a los costados y arriba/abajo, se apaga en los extremos */
+    ondular(b, s, tLocal, ida, out) {
+      const C = CONFIG, v = b.vj;
+      const env = Math.sin(Math.PI * s) ** 2;            // 0 y con pendiente 0 en los extremos
+      const fase = ida ? 0 : 2.1;
+      const lat = env * 0.2 * C.ondulacion * Math.sin(Math.PI * 2 * b.fr * tLocal + b.f2 + fase);
+      const ver = env * (C.arco + 0.1 * C.ondulacion * Math.sin(Math.PI * 2 * b.fh * tLocal + b.f3 + fase));
+      out.addScaledVector(v.lat2, lat);
+      out.z += ver;
+      return out;
+    },
+
+    posicion(b, t, out) {
+      const v = b.vj;
+      b._posada = 0;
+      let t0 = 0;
+      if (t < v.tS) return hermite(v.E, v.vE, v.A, v.vA, v.tS, t / v.tS, out);
+      t0 += v.tS;
+      if (t < t0 + v.tI) {
+        const s = (t - t0) / v.tI;
+        hermite(v.A, v.vA, v.Fa, v.cero, v.tI, s, out);
+        return this.evitarColmena(this.ondular(b, s, t - t0, true, out));
+      }
+      t0 += v.tI;
+      if (t < t0 + v.tF) {
+        // Sobre la flor: baja girando, se posa, vuelve a subir girando
+        const u = (t - t0) / v.tF;
+        const h = 0.28 * (1 - smooth(0, 0.35, u) + smooth(0.7, 1, u));
+        const rc = 0.07 * Math.sin(Math.PI * h / 0.28);
+        const ang = b.fase + 3 * (t - t0);
+        b._posada = 1 - clamp(h / 0.03, 0, 1);
+        return out.set(v.Fl.x + rc * Math.cos(ang), v.Fl.y + rc * Math.sin(ang), v.Fl.z + h);
+      }
+      t0 += v.tF;
+      if (t < t0 + v.tV) {
+        const s = (t - t0) / v.tV;
+        hermite(v.Fa, v.cero, v.B, v.vB, v.tV, s, out);
+        return this.evitarColmena(this.ondular(b, s, t - t0, false, out));
+      }
+      t0 += v.tV;
+      return hermite(v.B, v.vB, v.E, v.vR, v.tR, clamp((t - t0) / v.tR, 0, 1), out);
+    },
+
+    /* Pose filtrada: se acerca a la deseada con un filtro exponencial (anti-temblor) */
+    filtrarPose(P, deseada, tau, dt, saltar, salida) {
+      const T = this.poseTmp;
+      deseada.decompose(T.p, T.q, T.s);
+      if (saltar || tau <= 0) { P.p.copy(T.p); P.q.copy(T.q); P.s.copy(T.s); }
+      else {
+        const a = 1 - Math.exp(-dt / tau);
+        P.p.lerp(T.p, a); P.q.slerp(T.q, a); P.s.lerp(T.s, a);
+      }
+      return salida.compose(P.p, P.q, P.s);
+    },
+
+    /* Punto de salida/regreso de cada abeja: dentro del círculo del logo, apenas bajo la superficie */
+    emisor(b, out) {
+      const r = CONFIG.emisorRadio * Math.sqrt(b.e0), a = b.e1 * Math.PI * 2;
+      return out.set(CONFIG.emisorX + r * Math.cos(a), CONFIG.emisorY + r * Math.sin(a), -0.02);
+    },
+
+    /* Red de seguridad: si algún punto de las curvas de salida o regreso cae dentro del
+       cilindro que la envuelve (por debajo de la tapa), se lo empuja radialmente hacia afuera.
+       Es continuo, así que la abeja "resbala" por la pared en vez de saltar. */
+    evitarColmena(p) {
+      const dx = p.x - CONFIG.ejeX, dy = p.y - CONFIG.ejeY;
+      const r = Math.hypot(dx, dy);
+      const min = 0.88 * smooth(-0.03, -0.1, p.z);
+      if (r < min && r > 1e-6) {
+        p.x = CONFIG.ejeX + dx * min / r;
+        p.y = CONFIG.ejeY + dy * min / r;
+      }
+      return p;
+    },
+
+    tick(time, dtMs) {
+      const dt = Math.min(dtMs || 16, 50) / 1000;
+      this.realT += dt;
+      this.contarFps(dt);
+
+      const visible = this.el.object3D.visible;     // MindAR lo apaga al perder el target
+      if (visible) {
+        // Si la tapa estuvo fuera de cuadro un buen rato, la animación arranca de nuevo
+        if (CONFIG.reiniciarTrasSeg > 0 && this.perdidoSeg > CONFIG.reiniciarTrasSeg) this.simT = 0;
+        this.perdidoSeg = 0;
+        this.simT += dt * CONFIG.velocidad;
+      } else {
+        this.perdidoSeg += dt;
+      }
+      this.el.sceneEl.camera.getWorldPosition(this.v.cam);
+      this.alas.material.opacity = CONFIG.alasOpacidad;
+
+      // Grupo de abejas y flores: sigue a la tapa con filtro
+      this.escena.visible = visible;
+      if (visible) {
+        this.raiz.updateWorldMatrix(true, false);
+        this.filtrarPose(this.escenaPose, this.raiz.matrixWorld, CONFIG.escenaSuavizado, dt,
+          this.escenaSaltar, this.escena.matrix);
+        this.escena.matrixWorldNeedsUpdate = true;
+        this.escenaSaltar = false;
+      } else {
+        this.escenaSaltar = true;
+      }
+
+      const n = Math.min(CONFIG.abejas, MAX_ABEJAS);
+      const s = CONFIG.tamanoMm / CONFIG.markerMm;
+      const { P, Pa, Pb, V, X, Y, Z, S, UP } = this.v;
+      const { M, W, Wl, T, Rz, Ry, ESPEJO, CERO } = this.m;
+      let volando = 0;
+
+      for (let i = 0; i < n; i++) {
+        const b = this.abejas[i];
+        this.planViaje(b);
+        const L = b.vj.L;
+        const ciclo = L + 0.6 + 2.4 * b.p0;                     // pausa adentro antes de volver a salir
+        // Las abejas se suman de a una: la i-ésima sale por primera vez en "nace"
+        const ini = Math.max(1, Math.round(CONFIG.abejasIniciales));
+        const nace = i < ini
+          ? i * 0.15                                                  // primera tanda, casi juntas
+          : ini * 0.15 + CONFIG.intervaloSeg * (i - ini + 1 + 0.5 * (b.n0 - 0.5));
+        const edad = this.simT - nace;
+        const t = mod(edad, ciclo);
+        if (edad < 0 || t >= L) {
+          this.cuerpos.setMatrixAt(i, CERO);
+          this.alas.setMatrixAt(2 * i, CERO); this.alas.setMatrixAt(2 * i + 1, CERO);
+          continue;
+        }
+        volando++;
+
+        this.posicion(b, t, P);
+        b.posada = b._posada;
+        this.posicion(b, Math.min(L, t + 0.02), Pb);
+        this.posicion(b, Math.max(0, t - 0.02), Pa);
+        V.subVectors(Pb, Pa);
+
+        // Orientación según la tangente de la trayectoria, con +Z de la tapa como "arriba"
+        if (V.lengthSq() > 1e-10) Z.copy(V).normalize(); else Z.copy(b.prevZ);
+        X.crossVectors(UP, Z);
+        if (X.lengthSq() < 0.04) X.copy(b.prevX); else X.normalize();   // vuelo casi vertical
+        Y.crossVectors(Z, X).normalize();
+        X.crossVectors(Y, Z);
+        b.prevX.copy(X); b.prevZ.copy(Z);
+
+        const vida = smooth(0, 0.35, t) * (1 - smooth(L - 0.35, L, t));
+        const k = s * vida;
+        M.makeBasis(X, Y, Z).scale(S.set(k, k, k)).setPosition(P);
+        this.cuerpos.setMatrixAt(i, M);
+
+        // Alas: raíz sobre el tórax, aleteo alrededor del eje del cuerpo
+        // Posada sobre la flor: alas casi quietas, plegadas hacia atrás
+        const vuela = 1 - b.posada;
+        const aleteo = 0.2 * vuela - 0.15 * b.posada
+          + (0.15 + 0.75 * vuela) * Math.sin(this.realT * Math.PI * 2 * (4 + 12 * vuela) + b.f2 * 10);
+        T.makeTranslation(0.1, 0.15, 0.12);
+        Rz.makeRotationZ(aleteo);
+        Wl.multiplyMatrices(T, Rz).multiply(Ry);
+        W.multiplyMatrices(M, Wl);
+        this.alas.setMatrixAt(2 * i, W);
+        W.multiplyMatrices(M, ESPEJO).multiply(Wl);
+        this.alas.setMatrixAt(2 * i + 1, W);
+      }
+      this.actualizarLogo(visible, dt);
+      this.cuerpos.count = n;
+      this.alas.count = 2 * n;
+      this.cuerpos.instanceMatrix.needsUpdate = true;
+      this.alas.instanceMatrix.needsUpdate = true;
+
+      // Sonido: cada ~100 ms, según abejas en vuelo y distancia de la cámara a la tapa
+      if (this.realT - this.ultimoAudio > 0.1) {
+        this.ultimoAudio = this.realT;
+        let nivel = 0, brillo = 0;
+        if (visible && n > 0) {
+          this.el.object3D.matrixWorld.decompose(this.v.pos, this.v.q, this.v.scl);
+          const d = this.v.pos.distanceTo(this.v.cam) / (this.v.scl.x || 1);   // en u (1 u = 46,6 mm)
+          const cerca = 1 - smooth(3, 14, d);                                   // ~14 cm → ~65 cm
+          brillo = cerca;
+          nivel = Math.sqrt(volando / n) * (0.2 + 0.8 * cerca);   // crece a medida que salen abejas
+          this.distanciaMm = d * CONFIG.markerMm;
+        }
+        Zumbido.fijar(nivel, brillo, n > 0 ? volando / n : 0);
+      }
+    },
+
+    contarFps(dt) {
+      const f = this.fps; f.n++; f.t += dt;
+      if (f.t >= 0.5) { f.valor = Math.round(f.n / f.t); f.n = 0; f.t = 0; }
+    },
+  });
+  </script>
+</head>
+
+<body>
+  <div id="inicio">
+    <img class="portada-logo" src="./assets/logo.png" alt="airux, apicultura con datos" />
+    <h1>Experiencia con Realidad Aumentada</h1>
+    <p>Apuntá la cámara a la tapa, desde arriba y a unos 20 cm. Las abejas salen del logo.</p>
+    <p class="nota">Tiene sonido: subí el volumen.</p>
+    <button id="btn-empezar">Abrir la cámara</button>
+  </div>
+
+  <img id="logo-hud" src="./assets/logo.png" alt="airux, apicultura con datos" />
+  <div id="pista" class="oculto">Apuntá a la tapa de la colmena</div>
+  <button id="btn-sonido" aria-label="Silenciar">🔊</button>
+  <button id="btn-cal">Calibrar</button>
+  <div id="panel" role="dialog" aria-label="Calibración"></div>
+
+  <!-- ═════════════════════════════════════════════════════════════════
+       ESCENA AR
+       filterMinCF / filterBeta: más bajos = menos temblor pero más retraso.
+       Con un marker chico como este conviene priorizar estabilidad.
+       ═════════════════════════════════════════════════════════════════ -->
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets/tapa.mind; autoStart: false; maxTrack: 1;
+                  uiLoading: no; uiScanning: no;
+                  filterMinCF: 0.0001; filterBeta: 10; warmupTolerance: 5; missTolerance: 10"
+    renderer="colorManagement: true; antialias: true; alpha: true"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false">
+
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+    <a-entity light="type: ambient; intensity: 0.9"></a-entity>
+    <a-entity light="type: directional; intensity: 0.8" position="0.3 1 0.6"></a-entity>
+
+    <!-- Target = cara superior de la tapa. Todo el contenido lo arma el componente "colmena". -->
+    <a-entity id="target" mindar-image-target="targetIndex: 0" colmena></a-entity>
+  </a-scene>
+
+  <script>
+  /* ═════════════════════════════════════════════════════════════════════
+     ARRANQUE, EVENTOS Y PANEL
+     ═════════════════════════════════════════════════════════════════════ */
+  const escena = document.querySelector('a-scene');
+  const target = document.getElementById('target');
+  const inicio = document.getElementById('inicio');
+  const pista = document.getElementById('pista');
+  const btnEmpezar = document.getElementById('btn-empezar');
+  const btnSonido = document.getElementById('btn-sonido');
+  const btnCal = document.getElementById('btn-cal');
+  const panel = document.getElementById('panel');
+  const colmena = () => target.components.colmena;
+
+  btnEmpezar.addEventListener('click', async () => {
+    btnEmpezar.disabled = true;
+    btnEmpezar.textContent = 'Abriendo cámara…';
+    Zumbido.iniciar();                                   // dentro del gesto: desbloquea el audio
+
+    // Un .mind ausente o corrupto rompe MindAR con un error críptico de msgpack: lo chequeamos antes
+    try {
+      const r = await fetch('./targets/tapa.mind', { cache: 'no-store' });
+      const largo = (await r.clone().arrayBuffer()).byteLength;
+      const tipo = r.headers.get('content-type') || '';
+      if (!r.ok || tipo.includes('text/html') || largo < 2000) {
+        throw new Error(`targets/tapa.mind no es válido (HTTP ${r.status}, ${largo} bytes, ${tipo || 'sin tipo'})`);
+      }
+    } catch (e) {
+      console.error(e);
+      inicio.querySelector('p').textContent = 'Falta el marker compilado: ' + e.message;
+      btnEmpezar.disabled = false; btnEmpezar.textContent = 'Reintentar';
+      return;
+    }
+
+    if (!escena.hasLoaded) await new Promise((r) => escena.addEventListener('loaded', r, { once: true }));
+    escena.systems['mindar-image-system'].start();
+  });
+
+  escena.addEventListener('arReady', () => {
+    inicio.classList.add('oculto');
+    pista.classList.remove('oculto');
+    btnSonido.style.display = 'block';
+    if (MODO_DESARROLLO) btnCal.style.display = 'block';
+  });
+  escena.addEventListener('arError', () => {
+    btnEmpezar.disabled = false;
+    btnEmpezar.textContent = 'Reintentar';
+    inicio.querySelector('p').textContent =
+      'No se pudo abrir la cámara. La página tiene que estar en HTTPS y hay que dar permiso de cámara.';
+  });
+  target.addEventListener('targetFound', () => pista.classList.add('oculto'));
+  target.addEventListener('targetLost', () => pista.classList.remove('oculto'));
+
+  btnSonido.addEventListener('click', () => {
+    Zumbido.activo = !Zumbido.activo;
+    btnSonido.textContent = Zumbido.activo ? '🔊' : '🔇';
+    btnSonido.setAttribute('aria-label', Zumbido.activo ? 'Silenciar' : 'Activar sonido');
+  });
+
+  /* Panel generado desde esta lista: [clave, etiqueta, min, max, paso, ¿en u?] o [título] */
+  const CONTROLES = [
+    ['Enjambre'],
+    ['abejas', 'Cantidad', 5, MAX_ABEJAS, 1],
+    ['abejasIniciales', 'Salen juntas al comienzo', 1, 20, 1],
+    ['intervaloSeg', 'Segundos entre abejas nuevas', 0, 5, 0.1],
+    ['reiniciarTrasSeg', 'Reiniciar tras perder la tapa (s)', 0, 60, 1],
+    ['alasOpacidad', 'Opacidad de las alas', 0.1, 1, 0.05],
+    ['abejaLuz', 'Luminosidad del naranja', 0.3, 1.2, 0.02],
+    ['abejaSat', 'Saturación del naranja', 0, 1.2, 0.02],
+    ['tamanoMm', 'Tamaño de abeja (mm)', 2, 14, 0.5],
+    ['velocidad', 'Velocidad', 0.2, 3, 0.05],
+    ['ondulacion', 'Ondulación del camino', 0, 3, 0.05],
+    ['arco', 'Altura del arco', 0, 1.5, 0.05, true],
+    ['florSeg', 'Tiempo sobre la flor (s)', 0.5, 10, 0.5],
+    ['escenaSuavizado', 'Anti-temblor abejas y flores (s)', 0, 0.6, 0.02],
+    ['Flores'],
+    ['flores', 'Cantidad', 0, MAX_FLORES, 1],
+    ['florDistMin', 'Distancia mínima', 0.9, 4, 0.05, true],
+    ['florDistMax', 'Distancia máxima', 1, 5, 0.05, true],
+    ['florAlturaMin', 'Tallo mínimo', 0.1, 1.5, 0.05, true],
+    ['florAlturaMax', 'Tallo máximo', 0.1, 2, 0.05, true],
+    ['florTamano', 'Tamaño', 0.5, 3, 0.05],
+    ['florSemilla', 'Disposición (semilla)', 1, 99, 1],
+    ['Salida desde el logo'],
+    ['emisorX', 'Centro X', -0.5, 0.5, 0.01, true],
+    ['emisorY', 'Centro Y', -0.6, 0.6, 0.01, true],
+    ['emisorRadio', 'Radio de la zona', 0, 0.5, 0.01, true],
+    ['Colmena (oclusor)'],
+    ['ejeX', 'Eje X', -0.3, 0.3, 0.005, true],
+    ['ejeY', 'Eje Y', -0.3, 0.3, 0.005, true],
+    ['altoColmenaMm', 'Alto total (mm)', 35, 70, 0.5],
+    ['Logo'],
+    ['logoDesdeSeg', 'Aparece a los (s)', 0, 40, 0.5],
+    ['logoAltura', 'Altura (modo tapa)', 0, 3, 0.05, true],
+    ['logoDistancia', 'Corrimiento hacia las alas', -1.5, 1.5, 0.05, true],
+    ['logoInclinacion', 'Inclinación hacia atrás (°)', 0, 90, 1],
+    ['logoGiro', 'Giro alrededor de la colmena (°)', 0, 359, 1],
+    ['logoAncho', 'Ancho', 0.8, 5, 0.05, true],
+    ['logoSuavizado', 'Anti-temblor (s)', 0, 1, 0.05],
+    ['Abeja grande'],
+    ['abejaGrandeDesdeSeg', 'Sale a los (s)', 0, 40, 0.5],
+    ['abejaGrandeEscala', 'Tamaño en vuelo', 1, 4, 0.1],
+    ['abejaGrandeVelocidad', 'Velocidad', 0.3, 3, 0.05],
+    ['abejaGrandeRadio', 'Radio de la vuelta', 0.6, 3, 0.05, true],
+    ['abejaGrandeAltura', 'Altura de la vuelta', 0.2, 2.5, 0.05, true],
+    ['Sonido'],
+    ['volumen', 'Volumen', 0, 1, 0.05],
+  ];
+  const FISICOS = new Set(['ejeX', 'ejeY', 'altoColmenaMm', 'emisorX', 'emisorY', 'emisorRadio']);
+
+  function armarPanel() {
+    const fmt = (v, enU) => enU
+      ? `${(+v).toFixed(2)} u (${Math.round(v * CONFIG.markerMm)} mm)`
+      : `${+(+v).toFixed(2)}`;
+    let html = `<header><strong>Calibración</strong><span id="fps"></span><button id="cerrar" aria-label="Cerrar">✕</button></header>`;
+    for (const c of CONTROLES) {
+      if (c.length === 1) { html += `<h3>${c[0]}</h3>`; continue; }
+      const [k, et, mn, mx, paso, enU] = c;
+      html += `<label>${et} <span class="valor" id="v-${k}">${fmt(CONFIG[k], enU)}</span>
+        <input type="range" data-k="${k}" data-u="${enU ? 1 : 0}" min="${mn}" max="${mx}" step="${paso}" value="${CONFIG[k]}"></label>`;
+    }
+    html += `<h3>Ver</h3>
+      <label class="chk"><input type="checkbox" id="chk-oclusor"> Oclusor (rosa)</label>
+      <label class="chk"><input type="checkbox" id="chk-ayudas"> Ejes, borde de la tapa y zona de salida</label>
+      <label class="chk"><input type="checkbox" id="chk-patas" ${CONFIG.patasEnX ? 'checked' : ''}> Patas del soporte en ±X</label>
+      <label class="chk"><input type="checkbox" id="chk-logo" ${CONFIG.mostrarLogo ? 'checked' : ''}> Mostrar logo</label>
+      <label class="chk"><input type="checkbox" id="chk-logo3d" ${CONFIG.logo3D ? 'checked' : ''}> Logo en 3D (si no, plano)</label>
+      <label class="chk"><input type="checkbox" id="chk-abejag" ${CONFIG.abejaGrande ? 'checked' : ''}> Abeja grande que vuela al logo</label>
+      <label class="chk"><input type="radio" name="logo-modo" value="tapa" ${CONFIG.logoModo === 'tapa' ? 'checked' : ''}> Logo fijo a la tapa</label>
+      <label class="chk"><input type="radio" name="logo-modo" value="pantalla" ${CONFIG.logoModo === 'pantalla' ? 'checked' : ''}> Logo fijo en la pantalla</label>
+      <div class="acciones"><button id="reiniciar" class="sec">Reiniciar animación</button></div>
+      <div class="acciones"><button id="copiar">Copiar valores</button><button id="reset" class="sec">Restaurar</button></div>
+      <pre id="json"></pre>
+      <p class="pie">1 u = ancho de la tapa (${CONFIG.markerMm} mm). <span id="dist"></span></p>`;
+    panel.innerHTML = html;
+
+    panel.querySelectorAll('input[type=range]').forEach((inp) => {
+      inp.addEventListener('input', () => {
+        const k = inp.dataset.k;
+        CONFIG[k] = parseFloat(inp.value);
+        document.getElementById('v-' + k).textContent = fmt(CONFIG[k], inp.dataset.u === '1');
+        if (FISICOS.has(k)) colmena().reconstruir();
+        if (k.startsWith('flor') && k !== 'florSeg' || k === 'altoColmenaMm' || k === 'ejeX' || k === 'ejeY') colmena().crearFlores();
+        if (k === 'abejaLuz' || k === 'abejaSat') pintarAbeja(colmena().cuerpos.geometry);
+      });
+    });
+    document.getElementById('cerrar').onclick = () => { panel.style.display = 'none'; btnCal.style.display = 'block'; };
+    document.getElementById('chk-oclusor').onchange = (e) => { colmena().verOclusor = e.target.checked; colmena().reconstruir(); };
+    document.getElementById('chk-ayudas').onchange = (e) => { colmena().ayudas.visible = e.target.checked; };
+    document.getElementById('chk-patas').onchange = (e) => { CONFIG.patasEnX = e.target.checked; colmena().reconstruir(); };
+    document.getElementById('chk-logo').onchange = (e) => { CONFIG.mostrarLogo = e.target.checked; };
+    document.getElementById('chk-logo3d').onchange = (e) => { CONFIG.logo3D = e.target.checked; };
+    document.getElementById('chk-abejag').onchange = (e) => { CONFIG.abejaGrande = e.target.checked; };
+    panel.querySelectorAll('input[name=logo-modo]').forEach((r) => {
+      r.onchange = () => { if (r.checked) CONFIG.logoModo = r.value; };
+    });
+    document.getElementById('reiniciar').onclick = () => colmena().reiniciarAnimacion();
+    document.getElementById('copiar').onclick = copiarValores;
+    document.getElementById('reset').onclick = () => {
+      Object.assign(CONFIG, CONFIG_ORIGINAL); colmena().reconstruir(); colmena().crearFlores();
+      pintarAbeja(colmena().cuerpos.geometry);
+      armarPanel(); panel.style.display = 'block';
+    };
+  }
+  const CONFIG_ORIGINAL = JSON.parse(JSON.stringify(CONFIG));
+
+  async function copiarValores() {
+    const txt = JSON.stringify(CONFIG, null, 2);
+    const pre = document.getElementById('json');
+    pre.textContent = txt; pre.style.display = 'block';
+    const boton = document.getElementById('copiar');
+    try {
+      await navigator.clipboard.writeText(txt);
+      boton.textContent = 'Copiado';
+    } catch (e) {
+      // Respaldo: seleccionar el texto para copiarlo a mano
+      const r = document.createRange(); r.selectNodeContents(pre);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      boton.textContent = 'Seleccionado: copialo';
+    }
+    console.log('CONFIG calibrado:', txt);
+    setTimeout(() => (boton.textContent = 'Copiar valores'), 2000);
+  }
+
+  btnCal.addEventListener('click', () => { armarPanel(); panel.style.display = 'block'; btnCal.style.display = 'none'; });
+
+  // FPS y distancia en el panel
+  setInterval(() => {
+    if (panel.style.display !== 'block' || !colmena()) return;
+    const c = colmena();
+    document.getElementById('fps').textContent = `${c.fps.valor} fps`;
+    const dist = document.getElementById('dist');
+    if (dist) dist.textContent = target.object3D.visible && c.distanciaMm
+      ? `Cámara a ${Math.round(c.distanciaMm / 10)} cm.` : '';
+  }, 500);
+  </script>
+</body>
+</html>
