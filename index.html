@@ -157,7 +157,9 @@
     florDistMin: 1.2, florDistMax: 2.2,      // distancia lateral al eje de la colmena (u): ~5,5 a 10 cm
     florAlturaMin: 0.45, florAlturaMax: 0.85, // largo del tallo (u)
     florTamano: 1.3,
-    florSemilla: 7,        // cambia la disposición
+    florSemilla: 7,        // cambia la disposición y la mezcla de tipos
+    pasto: 40,             // briznas de pasto alrededor de cada planta
+    viento: 0.05,          // vaivén de flores y pasto (u en la punta de algo de 1 u de alto)
 
     // Zona de salida (en coordenadas de la tapa; 0,0 = centro del logo)
     emisorX: 0, emisorY: 0, emisorRadio: 0.3,
@@ -234,7 +236,7 @@
      si no carga, zumbido sintetizado con Web Audio.
      ═════════════════════════════════════════════════════════════════════ */
   const Zumbido = {
-    ctx: null, master: null, filtro: null, capaB: null, modo: null, activo: true,
+    ctx: null, salida: null, master: null, filtro: null, capaB: null, modo: null, activo: true, solo: null,
 
     // Tiene que llamarse dentro del handler de un toque (iOS)
     iniciar() {
@@ -243,9 +245,13 @@
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       const ctx = this.ctx = new AC();
+      // salida (volumen general y silencio) ← master (enjambre) + solista (una abeja)
+      this.salida = ctx.createGain();
+      this.salida.connect(ctx.destination);
       this.master = ctx.createGain();
       this.master.gain.value = 0;
-      this.master.connect(ctx.destination);
+      this.master.connect(this.salida);
+      this.crearSolista();
       ctx.resume();
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) ctx.suspend(); else ctx.resume();
@@ -305,7 +311,46 @@
       this.modo = 'sintetico';
     },
 
-    // nivel 0..1; brillo 0..1 (más cerca = más brillante); densidad 0..1 (fracción de abejas volando)
+    /* Una sola abeja sintetizada: sierra + cuadrada levemente desafinadas, con la rugosidad del
+       aleteo (trémolo rápido) y un vibrato lento. Se mueve en estéreo y cambia de tono. */
+    crearSolista() {
+      const ctx = this.ctx;
+      const o = {};
+      o.gain = ctx.createGain(); o.gain.gain.value = 0;
+      o.pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+      if (o.pan) { o.gain.connect(o.pan); o.pan.connect(this.salida); } else o.gain.connect(this.salida);
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 520; bp.Q.value = 1.1;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3800;
+      bp.connect(lp);
+      const trem = ctx.createGain(); trem.gain.value = 0.75; trem.connect(o.gain);
+      lp.connect(trem);
+      const lfo = ctx.createOscillator(); lfo.frequency.value = 23;               // rugosidad del aleteo
+      const lfoG = ctx.createGain(); lfoG.gain.value = 0.22;
+      lfo.connect(lfoG); lfoG.connect(trem.gain); lfo.start();
+      o.osc = ['sawtooth', 'square'].map((tipo, i) => {
+        const osc = ctx.createOscillator(); osc.type = tipo; osc.frequency.value = 230 * (1 + i * 0.006);
+        const vib = ctx.createOscillator(); vib.frequency.value = 5.5 + i;
+        const vibG = ctx.createGain(); vibG.gain.value = 4;
+        vib.connect(vibG); vibG.connect(osc.frequency); vib.start();
+        const g = ctx.createGain(); g.gain.value = i ? 0.12 : 0.3;
+        osc.connect(g); g.connect(bp); osc.start();
+        return osc;
+      });
+      this.solo = o;
+    },
+
+    // nivel 0..1, pan −1..1, frecuencia en Hz
+    fijarSolista(nivel, pan, freq) {
+      const o = this.solo;
+      if (!o) return;
+      const t = this.ctx.currentTime;
+      o.gain.gain.setTargetAtTime(this.activo ? nivel * CONFIG.volumen * 0.6 : 0, t, 0.08);
+      if (o.pan) o.pan.pan.setTargetAtTime(pan, t, 0.08);
+      o.osc[0].frequency.setTargetAtTime(freq, t, 0.08);
+      o.osc[1].frequency.setTargetAtTime(freq * 1.006, t, 0.08);
+    },
+
+    // Enjambre. nivel 0..1; brillo 0..1 (más cerca = más brillante); densidad 0..1 (fracción volando)
     fijar(nivel, brillo, densidad) {
       if (!this.ctx || !this.modo) return;
       const t = this.ctx.currentTime;
@@ -419,6 +464,99 @@
   /* ═════════════════════════════════════════════════════════════════════
      COMPONENTE PRINCIPAL: va sobre la entidad mindar-image-target
      ═════════════════════════════════════════════════════════════════════ */
+  /* ═════════════════════════════════════════════════════════════════════
+     PLANTAS: geometrías paramétricas con colores por vértice. Todas se juntan
+     en una sola malla (Mezclador) → una sola llamada de dibujo para el jardín.
+     ═════════════════════════════════════════════════════════════════════ */
+
+  /* Tira paramétrica para pétalos, hojas y briznas.
+     Local: nace en el origen y crece hacia +X, ancho en Y, "arriba" en +Z.
+     o = { largo, ancho, perfil(s), copa, arco, pliegue, muesca, colorBase, colorPunta, segL, segA } */
+  function geoTira(o) {
+    const segL = o.segL || 6, segA = o.segA || 4;
+    const pos = [], col = [], idx = [];
+    const cb = new THREE.Color(o.colorBase), cp = new THREE.Color(o.colorPunta), c = new THREE.Color();
+    for (let i = 0; i <= segL; i++) {
+      const s = i / segL;
+      const mitad = 0.5 * o.ancho * o.perfil(s);
+      for (let j = 0; j <= segA; j++) {
+        const u = (j / segA) * 2 - 1;                       // −1 a 1 a lo ancho
+        let x = o.largo * s;
+        if (o.muesca) x -= o.muesca * o.largo * (1 - Math.abs(u)) * smooth(0.75, 1, s);   // punta con muesca
+        const y = u * mitad;
+        const z = (o.copa || 0) * u * u * mitad                // ahuecado a lo ancho
+          + (o.arco || 0) * s * s * o.largo                     // se curva a lo largo (− = cae)
+          - (o.pliegue || 0) * Math.abs(u) * mitad;             // pliegue en V (nervio central)
+        pos.push(x, y, z);
+        c.copy(cb).lerp(cp, Math.pow(s, 0.7));
+        col.push(c.r, c.g, c.b);
+      }
+    }
+    const fila = segA + 1;
+    for (let i = 0; i < segL; i++) for (let j = 0; j < segA; j++) {
+      const a = i * fila + j, b = a + fila;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  }
+
+  /* Le pone color a una geometría de three (tallo, centro, cáliz). colorDe(x, y, z) → THREE.Color */
+  function pintar(g, colorDe) {
+    const p = g.attributes.position, col = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) {
+      const c = colorDe(p.getX(i), p.getY(i), p.getZ(i));
+      col[3 * i] = c.r; col[3 * i + 1] = c.g; col[3 * i + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  }
+
+  /* Junta muchas geometrías (con su matriz) en una sola. aFlex = cuánto se mueve con el viento:
+     por defecto la altura sobre la mesa; una geometría puede traer su propio aFlex (las briznas). */
+  class Mezclador {
+    constructor(zMesa) { this.zMesa = zMesa; this.pos = []; this.nor = []; this.col = []; this.flex = []; this.idx = []; }
+    agregar(g, m, flexExtra = 1) {
+      const p = g.attributes.position, n = g.attributes.normal, c = g.attributes.color, f = g.attributes.aFlex;
+      const nm = new THREE.Matrix3().getNormalMatrix(m), v = new THREE.Vector3(), w = new THREE.Vector3();
+      const base = this.pos.length / 3;
+      for (let i = 0; i < p.count; i++) {
+        v.fromBufferAttribute(p, i).applyMatrix4(m);
+        w.fromBufferAttribute(n, i).applyMatrix3(nm).normalize();
+        this.pos.push(v.x, v.y, v.z); this.nor.push(w.x, w.y, w.z);
+        this.col.push(c.getX(i), c.getY(i), c.getZ(i));
+        this.flex.push(f ? f.getX(i) * flexExtra : Math.max(0, v.z - this.zMesa) * flexExtra);
+      }
+      if (g.index) for (let i = 0; i < g.index.count; i++) this.idx.push(base + g.index.getX(i));
+      else for (let i = 0; i < p.count; i++) this.idx.push(base + i);
+      g.dispose();
+    }
+    geometria() {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+      g.setAttribute('aFlex', new THREE.Float32BufferAttribute(this.flex, 1));
+      g.setIndex(this.idx);
+      return g;
+    }
+  }
+
+  /* Vaivén del viento: la MISMA fórmula se usa en el shader y acá (para que las abejas
+     se posen donde la flor está en ese momento). p en coordenadas de la tapa. */
+  function vaiven(p, flex, t, out) {
+    const a = CONFIG.viento * flex, fase = p.x * 2.3 + p.y * 1.7;
+    return out.set(p.x + a * Math.sin(t * 1.6 + fase), p.y + a * 0.7 * Math.cos(t * 1.2 + fase * 1.3), p.z);
+  }
+  const VAIVEN_GLSL = `
+    float faseV = position.x * 2.3 + position.y * 1.7;
+    transformed.x += uViento * aFlex * sin(uT * 1.6 + faseV);
+    transformed.y += uViento * aFlex * 0.7 * cos(uT * 1.2 + faseV * 1.3);`;
+
   AFRAME.registerComponent('colmena', {
     init() {
       this.raiz = new THREE.Group();          // espacio de la tapa (ver diagrama arriba)
@@ -792,90 +930,188 @@
 
     /* ── FLORES ─────────────────────────────────────────────────────────── */
     prepararFlores() {
-      const lambert = (c) => new THREE.MeshLambertMaterial({ color: c });
-      const unidad = () => new THREE.SphereGeometry(1, 10, 6);
-      const tallo = new THREE.CylinderGeometry(1, 1, 1, 6);
-      tallo.rotateX(Math.PI / 2); tallo.translate(0, 0, 0.5);       // eje +Z, base en el origen
-      const alargada = unidad(); alargada.translate(1, 0, 0);          // pétalo/hoja: raíz en el origen, hacia +X
-      const hoja = alargada.clone();
-      this.fl = {
-        tallos: new THREE.InstancedMesh(tallo, lambert('#5a8a3c'), MAX_FLORES),
-        hojas: new THREE.InstancedMesh(hoja, lambert('#4f8a3a'), MAX_FLORES * 2),
-        centros: new THREE.InstancedMesh(unidad(), lambert('#ffffff'), MAX_FLORES),
-        petalos: new THREE.InstancedMesh(alargada, lambert('#ffffff'), MAX_FLORES * 8),
+      this.uViento = { value: CONFIG.viento };
+      this.uT = { value: 0 };
+      const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uViento = this.uViento;
+        sh.uniforms.uT = this.uT;
+        sh.vertexShader = 'attribute float aFlex;\nuniform float uViento;\nuniform float uT;\n'
+          + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>' + VAIVEN_GLSL);
       };
-      Object.values(this.fl).forEach((m) => { m.frustumCulled = false; m.count = 0; this.escena.add(m); });
+      this.jardin = new THREE.Mesh(new THREE.BufferGeometry(), mat);
+      this.jardin.frustumCulled = false;
+      this.escena.add(this.jardin);
       this.flores = [];
       this.crearFlores();
     },
 
+    /* Arma todas las plantas. Tres tipos, mezclados según la semilla:
+         margarita  → muchos pétalos finos y centro abombado
+         simple     → 6–8 pétalos anchos con muesca (tipo cosmos)
+         ramillete  → tallo ramificado con varias flores chicas
+       Cada cabeza de flor queda en this.flores como lugar de posado. */
     crearFlores() {
-      const C = CONFIG, F = this.fl;
+      const C = CONFIG, tam = C.florTamano;
       const rnd = aleatorio(Math.round(C.florSemilla) * 9973 + 1);
       const n = clamp(Math.round(C.flores), 0, MAX_FLORES);
-      const tam = C.florTamano;
       const zMesa = -C.altoColmenaMm / C.markerMm;
-      const colores = ['#f3efe6', '#c9a0dc', '#e889a8', '#f2c94c', '#8fa6e8', '#f6f6f6'];
-      const Z = new THREE.Vector3(0, 0, 1), q = new THREE.Quaternion(), qa = new THREE.Quaternion();
-      const m = new THREE.Matrix4(), m2 = new THREE.Matrix4(), col = new THREE.Color();
-      const pos = new THREE.Vector3(), esc = new THREE.Vector3();
-      const ubicadas = [];
+      const mz = new Mezclador(zMesa);
+      const Z = new THREE.Vector3(0, 0, 1), X = new THREE.Vector3(1, 0, 0);
+      const color = (h) => new THREE.Color(h);
+      const VERDES = ['#3f7a35', '#4c8a3a', '#5a9440'];
       this.flores = [];
-      let np = 0, nh = 0;
+      const ubicadas = [];
+
+      // Matriz: posición + orientación que lleva +Z a "normal" y gira "giro" alrededor de ella
+      const matriz = (pos, normal, giro = 0, esc = 1) => {
+        const q = new THREE.Quaternion().setFromUnitVectors(Z, normal.clone().normalize());
+        q.multiply(new THREE.Quaternion().setFromAxisAngle(Z, giro));
+        return new THREE.Matrix4().compose(pos, q, new THREE.Vector3(esc, esc, esc));
+      };
+      const rot = (m, eje, ang) => m.multiply(new THREE.Matrix4().makeRotationAxis(eje, ang));
+
+      const tallo = (puntos, radio, cBase, cPunta) => {
+        const curva = new THREE.CatmullRomCurve3(puntos);
+        const g = new THREE.TubeGeometry(curva, 10, radio, 5, false);
+        const z0 = puntos[0].z, z1 = puntos[puntos.length - 1].z;
+        const a = color(cBase), b = color(cPunta), c = new THREE.Color();
+        pintar(g, (x, y, z) => c.copy(a).lerp(b, clamp((z - z0) / ((z1 - z0) || 1), 0, 1)));
+        mz.agregar(g, new THREE.Matrix4());
+        return curva;
+      };
+
+      const hoja = (pos, normalTallo, giro, largo) => {
+        const g = geoTira({ largo, ancho: largo * 0.38, perfil: (s) => Math.pow(Math.sin(Math.PI * s), 0.8),
+          arco: -0.25, pliegue: 0.35, colorBase: '#3a6e30', colorPunta: '#6fa84a', segL: 6, segA: 2 });
+        const m = matriz(pos, normalTallo, giro);
+        rot(m, new THREE.Vector3(0, 1, 0), -1.1);                // sale del tallo hacia arriba
+        mz.agregar(g, m);
+      };
+
+      // Una cabeza de flor en "pos", mirando hacia "normal"
+      const cabeza = (pos, normal, tipo, esc, cPet, cBasePet) => {
+        const giro0 = rnd() * Math.PI * 2;
+        // Cáliz verde debajo
+        const caliz = new THREE.ConeGeometry(0.035 * esc, 0.05 * esc, 6, 1, true);
+        caliz.rotateX(-Math.PI / 2); caliz.translate(0, 0, -0.02 * esc);
+        pintar(caliz, () => color('#4c8a3a'));
+        mz.agregar(caliz, matriz(pos, normal));
+        // Pétalos
+        let nPet, largo, ancho, perfil, copa, arco, muesca = 0, capas = 1;
+        if (tipo === 'margarita') {
+          nPet = 16 + Math.floor(rnd() * 6); largo = 0.12; ancho = 0.028;
+          perfil = (s) => Math.pow(Math.sin(Math.PI * Math.min(s * 0.9 + 0.1, 1)), 0.45);
+          copa = 0.6; arco = 0.08; capas = 2;
+        } else if (tipo === 'simple') {
+          nPet = 6 + Math.floor(rnd() * 3); largo = 0.12; ancho = 0.075;
+          perfil = (s) => Math.pow(Math.sin(Math.PI * Math.min(s, 0.995)), 0.55) * (0.35 + 0.65 * s);
+          copa = 1.0; arco = 0.18; muesca = 0.25;
+        } else {   // flor chica del ramillete
+          nPet = 5; largo = 0.07; ancho = 0.05;
+          perfil = (s) => Math.pow(Math.sin(Math.PI * Math.min(s, 0.995)), 0.6) * (0.4 + 0.6 * s);
+          copa = 1.2; arco = 0.25;
+        }
+        for (let capa = 0; capa < capas; capa++) {
+          for (let k = 0; k < nPet; k++) {
+            const g = geoTira({ largo: largo * esc * (1 - 0.12 * capa), ancho: ancho * esc, perfil, copa, arco, muesca,
+              colorBase: cBasePet, colorPunta: color(cPet).offsetHSL(0, 0, (rnd() - 0.5) * 0.06), segL: 6, segA: 4 });
+            const m = matriz(pos, normal, giro0 + (k + 0.5 * capa) / nPet * Math.PI * 2 + (rnd() - 0.5) * 0.15);
+            rot(m, new THREE.Vector3(0, 1, 0), -0.12 - 0.12 * capa - rnd() * 0.12);   // levantados
+            m.multiply(new THREE.Matrix4().makeTranslation(0.012 * esc, 0, 0.004 * capa * esc));
+            mz.agregar(g, m);
+          }
+        }
+        // Centro abombado con granulado de color
+        const rc = (tipo === 'margarita' ? 0.042 : tipo === 'simple' ? 0.03 : 0.018) * esc;
+        const centro = new THREE.SphereGeometry(rc, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+        centro.rotateX(Math.PI / 2); centro.scale(1, 1, 0.55);
+        const cc1 = color(tipo === 'ramillete' ? '#f6e27a' : '#e0a020'), cc2 = color(tipo === 'simple' ? '#7a4a1a' : '#b86e12');
+        const ct = new THREE.Color();
+        pintar(centro, (x, y) => ct.copy(cc1).lerp(cc2, 0.5 + 0.5 * Math.sin(x * 900 + y * 1300)));
+        mz.agregar(centro, matriz(pos, normal));
+        // Lugar de posado: arriba del centro (la abeja se desplaza un poco según su tamaño)
+        const lugar = pos.clone().addScaledVector(normal, rc * 0.6);
+        this.flores.push({ cabeza: lugar, flex: Math.max(0, lugar.z - zMesa), radio: rc * 0.8 });
+      };
+
+      const brizna = (pos, giro, alto) => {
+        const g = geoTira({ largo: alto, ancho: 0.018 + 0.012 * rnd(), perfil: (s) => Math.pow(1 - s, 0.8),
+          arco: 0, pliegue: 0.3, colorBase: VERDES[0], colorPunta: rnd() < 0.5 ? '#8dbb4c' : '#a3c45a', segL: 4, segA: 1 });
+        // La tira crece en +X: la paramos (X → Z) y la inclinamos un poco
+        const fl = new Float32Array(g.attributes.position.count);
+        for (let i = 0; i < fl.length; i++) fl[i] = Math.pow(g.attributes.position.getX(i) / alto, 1.5) * 0.6;
+        g.setAttribute('aFlex', new THREE.BufferAttribute(fl, 1));
+        const m = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
+        rot(m, Z, giro);
+        rot(m, new THREE.Vector3(0, 1, 0), -Math.PI / 2 + 0.15 + 0.35 * rnd());   // casi vertical
+        mz.agregar(g, m);
+      };
 
       for (let i = 0; i < n; i++) {
-        // Posición: alternando lados, separadas entre sí
+        // Ubicación: alternando lados, separadas entre sí
         const lado = i % 2 ? 1 : -1;
         let x = 0, y = 0;
         for (let intento = 0; intento < 40; intento++) {
           x = C.ejeX + lado * lerp(C.florDistMin, C.florDistMax, rnd());
           y = C.ejeY + lerp(-1.4, 1.4, rnd());
-          if (ubicadas.every(([ux, uy]) => Math.hypot(ux - x, uy - y) > 0.42 * tam)) break;
+          if (ubicadas.every(([ux, uy]) => Math.hypot(ux - x, uy - y) > 0.45 * tam)) break;
         }
         ubicadas.push([x, y]);
-        const H = lerp(C.florAlturaMin, C.florAlturaMax, rnd());
-        // Tallo apenas inclinado: la cabeza mira hacia donde apunta el tallo
-        const az = rnd() * Math.PI * 2, inc = THREE.MathUtils.degToRad(6 + 16 * rnd());
-        const nrm = new THREE.Vector3(Math.sin(inc) * Math.cos(az), Math.sin(inc) * Math.sin(az), Math.cos(inc));
-        q.setFromUnitVectors(Z, nrm);
+        // Uno de cada tres es ramillete; el resto, margarita o simple
+        const tipo = i % 3 === 1 ? 'ramillete' : rnd() < 0.5 ? 'margarita' : 'simple';
+        const paleta = tipo === 'margarita'
+          ? (rnd() < 0.75 ? ['#ffffff', '#f4f1e6'] : ['#d9c2f0', '#b38ad9'])
+          : tipo === 'simple'
+            ? [['#f7c6d6', '#c2457a'], ['#f3e9ff', '#a57bd1'], ['#ffffff', '#e2b6c8']][Math.floor(rnd() * 3)]
+            : [['#8fa6e8', '#5c6fc4'], ['#c9a0dc', '#8a5bb0'], ['#f6d55c', '#e0a020']][Math.floor(rnd() * 3)];
+        const [cPet, cBase] = paleta;
+
+        // Tallo curvo
+        const H = lerp(C.florAlturaMin, C.florAlturaMax, rnd()) * (tipo === 'ramillete' ? 1.1 : 1);
+        const az = rnd() * Math.PI * 2, curv = 0.08 + 0.12 * rnd();
+        const dir = new THREE.Vector3(Math.cos(az), Math.sin(az), 0);
         const base = new THREE.Vector3(x, y, zMesa);
-        const cabeza = base.clone().addScaledVector(nrm, H);
+        const pts = [0, 0.35, 0.7, 1].map((t) => base.clone()
+          .addScaledVector(Z, H * t).addScaledVector(dir, curv * H * t * t));
+        const curva = tallo(pts, 0.013 * tam, '#3a6e30', '#5a9440');
+        const fin = curva.getPoint(1), tang = curva.getTangent(1);
 
-        F.tallos.setMatrixAt(i, m.compose(base, q, esc.set(0.016 * tam, 0.016 * tam, H)));
-        F.centros.setMatrixAt(i, m.compose(cabeza, q, esc.set(0.055 * tam, 0.055 * tam, 0.03 * tam)));
-        F.centros.setColorAt(i, col.set(rnd() < 0.7 ? '#e0a020' : '#7a4a1a'));
+        // Hojas
+        const nHojas = 2 + Math.floor(rnd() * 2);
+        for (let k = 0; k < nHojas; k++) {
+          const t = 0.12 + 0.3 * k / nHojas + 0.08 * rnd();
+          hoja(curva.getPoint(t), curva.getTangent(t), az + Math.PI * (k % 2) + rnd() * 0.8, (0.12 + 0.08 * rnd()) * tam);
+        }
 
-        // Pétalos alrededor del centro, levantados un poco
-        const nPet = 6 + Math.floor(rnd() * 3);
-        const cPet = colores[Math.floor(rnd() * colores.length)];
-        for (let k = 0; k < nPet; k++) {
-          qa.setFromAxisAngle(Z, (k / nPet) * Math.PI * 2 + az);
-          m.compose(cabeza, q, esc.set(1, 1, 1));
-          m2.makeRotationFromQuaternion(qa); m.multiply(m2);
-          m2.makeRotationY(-0.32); m.multiply(m2);
-          m2.makeScale(0.052 * tam, 0.032 * tam, 0.01 * tam); m.multiply(m2);
-          F.petalos.setMatrixAt(np, m);
-          F.petalos.setColorAt(np, col.set(cPet).offsetHSL(0, 0, (rnd() - 0.5) * 0.06));
-          np++;
+        if (tipo === 'ramillete') {
+          // Ramas que salen de la parte alta del tallo, cada una con una flor chica
+          const nRamas = 3 + Math.floor(rnd() * 3);
+          for (let k = 0; k < nRamas; k++) {
+            const t0 = 0.55 + 0.4 * (k / nRamas);
+            const p0 = curva.getPoint(t0);
+            const ang = az + k * 2.4 + rnd() * 0.6;
+            const sale = new THREE.Vector3(Math.cos(ang), Math.sin(ang), 0);
+            const largo = (0.14 + 0.1 * rnd()) * tam;
+            const p1 = p0.clone().addScaledVector(sale, largo * 0.5).addScaledVector(Z, largo * 0.4);
+            const p2 = p0.clone().addScaledVector(sale, largo * 0.8).addScaledVector(Z, largo * 0.95);
+            const rama = tallo([p0, p1, p2], 0.008 * tam, '#4c8a3a', '#5a9440');
+            cabeza(p2, rama.getTangent(1).lerp(Z, 0.4).normalize(), 'ramillete', tam * (0.85 + 0.3 * rnd()), cPet, cBase);
+          }
+          cabeza(fin, tang.clone().lerp(Z, 0.3).normalize(), 'ramillete', tam, cPet, cBase);
+        } else {
+          cabeza(fin, tang.clone().lerp(Z, 0.5).normalize(), tipo, tam, cPet, cBase);
         }
-        // Dos hojas a distintas alturas del tallo
-        for (let k = 0; k < 2; k++) {
-          pos.copy(base).addScaledVector(nrm, H * (0.25 + 0.25 * k));
-          qa.setFromAxisAngle(Z, az + Math.PI * k + rnd());
-          m.compose(pos, q, esc.set(1, 1, 1));
-          m2.makeRotationFromQuaternion(qa); m.multiply(m2);
-          m2.makeRotationY(-0.6); m.multiply(m2);
-          m2.makeScale(0.07 * tam, 0.026 * tam, 0.006 * tam); m.multiply(m2);
-          F.hojas.setMatrixAt(nh++, m);
+
+        // Pasto alrededor de la planta
+        for (let k = 0; k < Math.round(C.pasto); k++) {
+          const r = (0.04 + 0.26 * Math.sqrt(rnd())) * tam, a = rnd() * Math.PI * 2;
+          brizna(new THREE.Vector3(x + r * Math.cos(a), y + r * Math.sin(a), zMesa), rnd() * Math.PI * 2,
+            (0.1 + 0.22 * rnd()) * tam * (1 - 0.4 * r / (0.3 * tam)));
         }
-        // Donde se posan las abejas: arriba del centro
-        this.flores.push({ cabeza: cabeza.addScaledVector(nrm, 0.03 * tam), normal: nrm, tam });
       }
-      F.tallos.count = n; F.centros.count = n; F.petalos.count = np; F.hojas.count = nh;
-      Object.values(F).forEach((mm) => {
-        mm.instanceMatrix.needsUpdate = true;
-        if (mm.instanceColor) mm.instanceColor.needsUpdate = true;
-      });
+      this.jardin.geometry.dispose();
+      this.jardin.geometry = mz.geometria();
     },
 
     /* ── VIAJE DE CADA ABEJA ─────────────────────────────────────────────
@@ -893,8 +1129,9 @@
       v.B.copy(v.E); v.B.z += 0.55;
       if (this.flores.length) {
         const f = this.flores[Math.floor(b.fl * this.flores.length) % this.flores.length];
-        const r = 0.035 * f.tam * Math.sqrt(b.fr2);
-        v.Fl.copy(f.cabeza); v.Fl.x += r * Math.cos(b.fo); v.Fl.y += r * Math.sin(b.fo);
+        const r = f.radio * Math.sqrt(b.fr2);
+        vaiven(f.cabeza, f.flex, this.realT, v.Fl);            // donde está la flor ahora (con viento)
+        v.Fl.x += r * Math.cos(b.fo); v.Fl.y += r * Math.sin(b.fo);
       } else {
         // Sin flores: un punto en el aire alrededor de la colmena
         v.Fl.set(C.ejeX + 1.6 * Math.cos(b.fase), C.ejeY + 1.6 * Math.sin(b.fase), 0.3);
@@ -1010,6 +1247,7 @@
       }
       this.el.sceneEl.camera.getWorldPosition(this.v.cam);
       this.alas.material.opacity = CONFIG.alasOpacidad;
+      if (this.uT) { this.uT.value = this.realT; this.uViento.value = CONFIG.viento; }
 
       // Grupo de abejas y flores: sigue a la tapa con filtro
       this.escena.visible = visible;
@@ -1028,6 +1266,11 @@
       const { P, Pa, Pb, V, X, Y, Z, S, UP } = this.v;
       const { M, W, Wl, T, Rz, Ry, ESPEJO, CERO } = this.m;
       let volando = 0;
+      // Cámara en coordenadas de la escena (para elegir la abeja "solista" del sonido)
+      const camL = this.v.camL || (this.v.camL = new THREE.Vector3());
+      const invE = this.m.invE || (this.m.invE = new THREE.Matrix4());
+      camL.copy(this.v.cam).applyMatrix4(invE.copy(this.escena.matrix).invert());
+      let soloI = -1, soloD2 = Infinity;
 
       for (let i = 0; i < n; i++) {
         const b = this.abejas[i];
@@ -1050,6 +1293,11 @@
 
         this.posicion(b, t, P);
         b.posada = b._posada;
+        const d2 = P.distanceToSquared(camL);
+        if (d2 < soloD2) {
+          soloD2 = d2; soloI = i;
+          (this.v.soloP || (this.v.soloP = new THREE.Vector3())).copy(P);
+        }
         this.posicion(b, Math.min(L, t + 0.02), Pb);
         this.posicion(b, Math.max(0, t - 0.02), Pa);
         V.subVectors(Pb, Pa);
@@ -1095,11 +1343,35 @@
           const d = this.v.pos.distanceTo(this.v.cam) / (this.v.scl.x || 1);   // en u (1 u = 46,6 mm)
           const cerca = 1 - smooth(3, 14, d);                                   // ~14 cm → ~65 cm
           brillo = cerca;
-          nivel = Math.sqrt(volando / n) * (0.2 + 0.8 * cerca);   // crece a medida que salen abejas
+          // El enjambre (MP3) no se oye con 1–2 abejas y se completa con la mitad del enjambre afuera
+          const enjambre = smooth(2.5, Math.max(4, 0.5 * n), volando);
+          nivel = enjambre * (0.25 + 0.75 * cerca);
           this.distanciaMm = d * CONFIG.markerMm;
         }
         Zumbido.fijar(nivel, brillo, n > 0 ? volando / n : 0);
       }
+      this.sonidoSolista(visible, soloI, Math.sqrt(soloD2), volando, dt);
+    },
+
+    /* Abeja solista: la más cercana a la cámara. Volumen por distancia, paneo según dónde está en
+       la pantalla y un leve cambio de tono al acercarse/alejarse (efecto Doppler, exagerado). */
+    sonidoSolista(visible, i, d, volando, dt) {
+      if (!Zumbido.solo) return;
+      if (!visible || i < 0) { Zumbido.fijarSolista(0, 0, 230); this.soloPrev = -1; return; }
+      const b = this.abejas[i];
+      // Paneo: posición de la abeja en coordenadas de la cámara
+      const pc = (this.v.soloC || (this.v.soloC = new THREE.Vector3()))
+        .copy(this.v.soloP).applyMatrix4(this.escena.matrix)
+        .applyMatrix4(this.el.sceneEl.camera.matrixWorldInverse);
+      const pan = clamp(pc.x / Math.max(1e-3, -pc.z) * 1.4, -1, 1);
+      // Doppler: velocidad radial (u/s) de la misma abeja respecto del cuadro anterior
+      let vr = 0;
+      if (this.soloPrev === i && dt > 0) vr = (d - this.soloDist) / dt;
+      this.soloPrev = i; this.soloDist = d;
+      const freq = (215 + 40 * b.r0) * (1 - clamp(vr * 0.05, -0.08, 0.08));
+      // Más presente cuando hay pocas abejas; se calla posada en la flor
+      const nivel = (1 - smooth(2, 12, d)) * (1 - 0.55 * smooth(4, 15, volando)) * (1 - b.posada);
+      Zumbido.fijarSolista(nivel, pan, freq);
     },
 
     contarFps(dt) {
@@ -1228,7 +1500,9 @@
     ['florAlturaMin', 'Tallo mínimo', 0.1, 1.5, 0.05, true],
     ['florAlturaMax', 'Tallo máximo', 0.1, 2, 0.05, true],
     ['florTamano', 'Tamaño', 0.5, 3, 0.05],
-    ['florSemilla', 'Disposición (semilla)', 1, 99, 1],
+    ['florSemilla', 'Disposición y tipos (semilla)', 1, 99, 1],
+    ['pasto', 'Pasto por planta', 0, 120, 1],
+    ['viento', 'Viento', 0, 0.2, 0.005],
     ['Salida desde el logo'],
     ['emisorX', 'Centro X', -0.5, 0.5, 0.01, true],
     ['emisorY', 'Centro Y', -0.6, 0.6, 0.01, true],
@@ -1288,7 +1562,7 @@
         CONFIG[k] = parseFloat(inp.value);
         document.getElementById('v-' + k).textContent = fmt(CONFIG[k], inp.dataset.u === '1');
         if (FISICOS.has(k)) colmena().reconstruir();
-        if (k.startsWith('flor') && k !== 'florSeg' || k === 'altoColmenaMm' || k === 'ejeX' || k === 'ejeY') colmena().crearFlores();
+        if (k.startsWith('flor') && k !== 'florSeg' || ['pasto', 'altoColmenaMm', 'ejeX', 'ejeY'].includes(k)) colmena().crearFlores();
         if (k === 'abejaLuz' || k === 'abejaSat') pintarAbeja(colmena().cuerpos.geometry);
       });
     });
